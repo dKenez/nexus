@@ -38,5 +38,5 @@ def build_recipe(*recipes: Path):
         )
 
         built_recipes.append(image)
-    
+
     return built_recipes

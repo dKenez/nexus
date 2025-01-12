@@ -66,6 +66,8 @@ def prepare_portal(spell: Spell, name: str):
         portal_path / "server_data",
     )
 
+    return portal_path
+
 
 def create_portal(spell: Spell, name: str, start=False):
     portal_path = nexus.paths.portals_dir / name
@@ -84,26 +86,26 @@ def create_portal(spell: Spell, name: str, start=False):
     ]
 
     if start:
-        client.containers.run(
+        return client.containers.run(
             image=spell_book.nexus_spell_name(image),
             name=f"nexus-{name}",
             network=network,
             volumes=volumes,
-            user=f"{uid}:{gid}",
+            detach=True,
         )
     else:
-        client.containers.create(
+        return client.containers.create(
             image=spell_book.nexus_spell_name(image),
             name=f"nexus-{name}",
             network=network,
             volumes=volumes,
-            user=f"{uid}:{gid}",
         )
 
 
-def cast_portal(cls, spell: Spell, name: str):
-    prepare_portal(spell, name)
-    create_portal(spell, name)
+def cast_portal(spell: Spell, name: str):
+    prepare = prepare_portal(spell, name)
+    create = create_portal(spell, name)
+    return prepare, create
 
 
 def open_portal(name: str):
@@ -129,20 +131,9 @@ def remove_portal(name: str, force=False):
     portal.container.remove()
 
 
+# TODO: Fix permissions mess. Docker runs as root user, so all files created by it is owned by root, so managing it from the host machine is finnicky
 def destroy_portal(name: str, force=False):
     remove_portal(name, force)
 
     portal_path = nexus.paths.portals_dir / name
     shutil.rmtree(portal_path)
-
-
-if __name__ == "__main__":
-    ppmc_spell = spell_book.get_spell("papermc")
-    # prepare_portal(ppmc_spell, "testmc")
-
-    # create_portal(ppmc_spell, "testmc", start=True)
-    # close_portal("testmc")
-    destroy_portal("testmc", True)
-    # print(get_portal("testmc").container.status)
-    # remove_portal("testmc")
-    # shutil.rmtree(nexus.paths.portals_dir / "testmc")
