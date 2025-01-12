@@ -1,4 +1,3 @@
-import os
 import re
 import shutil
 
@@ -74,9 +73,6 @@ def create_portal(spell: Spell, name: str, start=False):
 
     image = spell.image
     network = "host"
-
-    uid = os.getuid()
-    gid = os.getgid()
 
     with open(spell.recipe / "properties.toml", "rb") as f:
         properties = tomllib.load(f)
