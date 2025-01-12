@@ -10,6 +10,4 @@ wheels/
 .venv
 
 # project settings
-configs_old
-
 portals/*

@@ -1,0 +1,10 @@
+name = "valheim"
+game_version = "the-bog-witch"
+
+volumes = [
+    "worlds_local:/root/.config/unity3d/IronGate/Valheim/worlds_local",
+    "adminlist.txt:/root/.config/unity3d/IronGate/Valheim/adminlist.txt",
+    "bannedlist.txt:/root/.config/unity3d/IronGate/Valheim/bannedlist.txt",
+    "permittedlist.txt:/root/.config/unity3d/IronGate/Valheim/permittedlist.txt",
+    "valheim.sh:/app/valheim.sh",
+]
