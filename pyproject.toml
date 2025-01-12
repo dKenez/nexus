@@ -1,0 +1,23 @@
+[project]
+name = "nexus"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "docker>=7.1.0",
+    "fastapi[standard]>=0.115.6",
+    "typer>=0.15.1",
+]
+
+[project.scripts]
+nexus = "nexus:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9.1",
+]
