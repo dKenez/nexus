@@ -68,7 +68,7 @@ def prepare_portal(spell: Spell, name: str):
     return portal_path
 
 
-def create_portal(spell: Spell, name: str, start=False):
+def create_portal(spell: Spell, name: str, start=False) -> Container:
     portal_path = nexus.paths.portals_dir / name
 
     image = spell.image

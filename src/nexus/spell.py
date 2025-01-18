@@ -13,5 +13,5 @@ class Spell:
     recipe: Path
 
     @staticmethod
-    def parse(name):
+    def parse(name: str):
         return spell_book.get_spell(name)

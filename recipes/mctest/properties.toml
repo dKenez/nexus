@@ -1,0 +1,15 @@
+name = "papermc"
+game_version = "1.21.3"
+
+volumes = [
+    "world:/app/world",
+    "world_nether:/app/world_nether",
+    "world_the_end:/app/world_the_end",
+    "plugins:/app/plugins",
+    "whitelist.json:/app/whitelist.json",
+    "banned-players.json:/app/banned-players.json",
+    "banned-ips.json:/app/banned-ips.json",
+    "ops.json:/app/ops.json",
+    "permissions.yml:/app/permissions.yml",
+    "server.properties:/app/server.properties",
+]

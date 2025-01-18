@@ -1,0 +1,23 @@
+version: '3'
+
+tasks:
+  build:
+    cmds:
+      - docker build -t papermc:1.21.3 .
+
+  run:
+    cmds:
+      - docker run
+        --network host
+        --name papermc
+        -v $(pwd)/server_data/world:/app/world
+        -v $(pwd)/server_data/world_nether:/app/world_nether
+        -v $(pwd)/server_data/world_the_end:/app/world_the_end
+        -v $(pwd)/server_data/plugins:/app/plugins
+        -v $(pwd)/server_data/whitelist.json:/app/whitelist.json
+        -v $(pwd)/server_data/banned-players.json:/app/banned-players.json
+        -v $(pwd)/server_data/banned-ips.json:/app/banned-ips.json
+        -v $(pwd)/server_data/ops.json:/app/ops.json
+        -v $(pwd)/server_data/permissions.yml:/app/permissions.yml
+        -v $(pwd)/server_data/server.properties:/app/server.properties
+        papermc:1.21.3
