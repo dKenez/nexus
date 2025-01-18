@@ -283,6 +283,7 @@ source = { editable = "." }
 dependencies = [
     { name = "docker" },
     { name = "fastapi", extra = ["standard"] },
+    { name = "python-dotenv" },
     { name = "typer" },
 ]
 
@@ -295,6 +296,7 @@ dev = [
 requires-dist = [
     { name = "docker", specifier = ">=7.1.0" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.115.6" },
+    { name = "python-dotenv", specifier = ">=1.0.1" },
     { name = "typer", specifier = ">=0.15.1" },
 ]
 

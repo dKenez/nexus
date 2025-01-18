@@ -1,0 +1,12 @@
+version: "3"
+
+tasks:
+  run-api:
+    cmds:
+      - docker run --name nexus -v /var/run/docker.sock:/var/run/docker.sock -v ./recipes:/app/recipes -v ./portals:/app/portals --network host --env-file .env --restart always nexus
+
+  start-api:
+      - docker start nexus
+
+  stop-api:
+      - docker stop nexus

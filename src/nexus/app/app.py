@@ -4,9 +4,10 @@ import typer
 import nexus.app.portal as portal
 import nexus.app.recipe as recipe
 import nexus.app.spell as spell
+from nexus.app.auth import verify_api_key
 
 cli_app = typer.Typer()
-api_app = fastapi.FastAPI()
+api_app = fastapi.FastAPI(dependencies=[fastapi.Depends(verify_api_key)])
 
 cli_app.add_typer(recipe.cli_app, name="recipe")
 cli_app.add_typer(spell.cli_app, name="spell")
