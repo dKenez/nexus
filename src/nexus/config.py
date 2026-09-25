@@ -21,7 +21,8 @@ def _split_csv(value: object) -> object:
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=None, extra="ignore")
+    # Blank values (e.g. `DISCORD_GUILD_ID=` in .env) mean "unset", not "invalid".
+    model_config = SettingsConfigDict(env_file=None, extra="ignore", env_ignore_empty=True)
 
     # --- app ---
     nexus_env: Environment = Environment.DEV

@@ -50,3 +50,10 @@ def test_api_token_required(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("NEXUS_API_TOKEN", raising=False)
     with pytest.raises(ValidationError):
         Settings()
+
+
+def test_blank_values_mean_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    s = settings(monkeypatch, DISCORD_GUILD_ID="", DISCORD_TOKEN="", DISCORD_ROLES_ADMIN="")
+    assert s.discord_guild_id is None
+    assert s.discord_token is None
+    assert s.discord_roles_admin == []
