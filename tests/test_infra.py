@@ -127,26 +127,54 @@ def test_gateway_only_claims_its_own_env() -> None:
     assert not gateway._is_ours(_server({}))  # ty: ignore[invalid-argument-type]
 
 
-async def test_dev_guard_refuses_prod_primary_ip() -> None:
+def _gateway(**kwargs: object) -> HcloudGateway:
+    options: dict = {
+        "token": "x",
+        "env": "dev",
+        "primary_ip": "nexus-dev",
+        "server_type": "cx32",
+        "image": "docker-ce",
+        "ssh_key_name": "nexus",
+        "firewall_name": "nexus-host",
+        "ssh_cidrs": [],
+        **kwargs,
+    }
+    return HcloudGateway(**options)
+
+
+def _primary_ips(*ips: SimpleNamespace) -> SimpleNamespace:
+    return SimpleNamespace(
+        get_by_name=lambda name: next((ip for ip in ips if ip.name == name), None),
+        get_by_id=lambda id_: next((ip for ip in ips if ip.id == id_), None),
+        get_all=lambda: list(ips),
+    )
+
+
+DEV_IP = SimpleNamespace(id=1, name="primary_ip-1", ip="2.28.133.144", auto_delete=False)
+PROD_IP = SimpleNamespace(id=2, name="game", ip="167.233.127.28", auto_delete=False)
+
+
+@pytest.mark.parametrize("ref", ["primary_ip-1", "1", "2.28.133.144"])
+def test_primary_ip_by_name_id_or_address(ref: str) -> None:
+    gateway = _gateway(primary_ip=ref)
+    gateway._client = SimpleNamespace(primary_ips=_primary_ips(DEV_IP))  # ty: ignore[invalid-assignment]
+    assert gateway._get_primary_ip() is DEV_IP
+
+
+@pytest.mark.parametrize("forbidden", ["game", "167.233.127.28"])
+async def test_dev_guard_refuses_prod_primary_ip(forbidden: str) -> None:
     from nexus.infra.hetzner import UnsafeEnvironmentError
 
-    gateway = HcloudGateway(
-        token="x",
-        env="dev",
-        primary_ip="nexus-dev",
-        server_type="cx32",
-        image="docker-ce",
-        ssh_key_name="nexus",
-        firewall_name="nexus-host",
-        ssh_cidrs=[],
-        forbidden_primary_ip="nexus-prod",
-    )
-    visible = {"nexus-prod": SimpleNamespace(name="nexus-prod")}
-    gateway._client = SimpleNamespace(  # ty: ignore[invalid-assignment]
-        primary_ips=SimpleNamespace(get_by_name=visible.get)
-    )
+    gateway = _gateway(primary_ip="2.28.133.144", forbidden_primary_ip=forbidden)
+    gateway._client = SimpleNamespace(primary_ips=_primary_ips(DEV_IP, PROD_IP))  # ty: ignore[invalid-assignment]
     with pytest.raises(UnsafeEnvironmentError):
         await gateway.check_environment()
+
+
+async def test_dev_guard_passes_with_dev_token() -> None:
+    gateway = _gateway(primary_ip="2.28.133.144", forbidden_primary_ip="167.233.127.28")
+    gateway._client = SimpleNamespace(primary_ips=_primary_ips(DEV_IP))  # ty: ignore[invalid-assignment]
+    await gateway.check_environment()
 
 
 # --- backups ---

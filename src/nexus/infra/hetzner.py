@@ -7,12 +7,13 @@ the project is listed, adopted or deleted.
 """
 
 import asyncio
+import ipaddress
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Protocol
 
-from hcloud import Client
+from hcloud import APIException, Client
 from hcloud.firewalls import FirewallRule
 from hcloud.images import Image
 from hcloud.locations import Location
@@ -134,13 +135,27 @@ class HcloudGateway:
 
     # --- helpers (sync, run in threads) ---
 
+    def _find_primary_ip(self, ref: str) -> BoundPrimaryIP | None:
+        """Look a Primary IP up by id, address or name."""
+        if ref.isdigit():
+            try:
+                return self._client.primary_ips.get_by_id(int(ref))
+            except APIException as exc:
+                if exc.code == "not_found":
+                    return None
+                raise
+        try:
+            address = ipaddress.ip_address(ref)
+        except ValueError:
+            return self._client.primary_ips.get_by_name(ref)
+        for ip in self._client.primary_ips.get_all():
+            if ip.ip and ipaddress.ip_address(ip.ip.split("/")[0]) == address:
+                return ip
+        return None
+
     def _get_primary_ip(self) -> BoundPrimaryIP:
         ref = self._primary_ip
-        ip = (
-            self._client.primary_ips.get_by_id(int(ref))
-            if ref.isdigit()
-            else self._client.primary_ips.get_by_name(ref)
-        )
+        ip = self._find_primary_ip(ref)
         if ip is None:
             raise HetznerError(f"primary IP {ref!r} not found in this project")
         return ip
@@ -170,7 +185,7 @@ class HcloudGateway:
     async def check_environment(self) -> None:
         def check() -> None:
             forbidden = self._forbidden_primary_ip
-            if forbidden and self._client.primary_ips.get_by_name(forbidden) is not None:
+            if forbidden and self._find_primary_ip(forbidden) is not None:
                 raise UnsafeEnvironmentError(
                     f"HCLOUD_TOKEN can see primary IP {forbidden!r}, which is forbidden in "
                     f"env {self._env!r}. Use the token of the Hetzner dev project."

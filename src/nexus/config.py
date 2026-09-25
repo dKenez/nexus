@@ -38,8 +38,9 @@ class Settings(BaseSettings):
 
     # --- hetzner ---
     hcloud_token: SecretStr
-    hcloud_primary_ip: str = Field(description="name or id of the static Primary IP")
-    # Dev-only guard: refuse to run if this Primary IP is visible to the token.
+    hcloud_primary_ip: str = Field(description="name, id or address of the static Primary IP")
+    # Dev-only guard: refuse to run if this Primary IP (name, id or address) is visible to the
+    # token, i.e. if the token belongs to the production project.
     hcloud_forbidden_primary_ip: str | None = None
     hcloud_server_type: str = "cx32"
     hcloud_image: str = "docker-ce"
