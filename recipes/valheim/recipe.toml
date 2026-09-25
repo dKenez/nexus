@@ -1,12 +1,14 @@
 name = "valheim"
 display_name = "Valheim"
-image = "ghcr.io/dkenez/nexus-valheim"
-# Image tag. Bump when rebuilding for a new game patch.
-version = "the-bog-witch"
+# The same image the current prod server runs: https://github.com/lloesche/valheim-server-docker
+# It downloads and updates the game itself at container start (from steamcmd).
+image = "docker.io/lloesche/valheim-server"
+version = "latest"
 enabled = true
 
-# Everything under data_path is backed up to ymir on stop and restored on start.
-data_path = "/data"
+# World, admin/ban/permit lists and settings. Everything here is backed up to ymir on stop
+# and restored on start. (/opt/valheim only holds the downloaded server; not backed up.)
+data_path = "/config"
 memory_mb = 4096
 
 ports = [
@@ -17,11 +19,23 @@ ports = [
 query = { type = "a2s", port = 2457 }
 
 idle_minutes = 20
+# First boot downloads the server (~1 GB) before it answers queries.
 startup_grace_minutes = 15
-# First boot generates the world, which is slow on small VMs.
 startup_timeout = 900
-stop_grace_seconds = 60
+# The image docs recommend --stop-timeout 120 so the world is saved on shutdown.
+stop_grace_seconds = 120
 
-env = { SERVER_NAME = "Hárfalon", WORLD_NAME = "Dedicated", SERVER_PUBLIC = "1" }
 # Read from NEXUS_GAME_VALHEIM_<KEY> in nexus's environment.
-secret_env = ["SERVER_PASSWORD"]
+secret_env = ["SERVER_PASS"]
+
+[env]
+SERVER_NAME = "Hárfalon"
+# Must match the directory in worlds_local/ of the migrated world.
+WORLD_NAME = "Dedicated"
+SERVER_PUBLIC = "true"
+TZ = "Europe/Copenhagen"
+# nexus owns backups and lifecycle: every start is a fresh VM with a fresh download, and
+# the image's own backups would only bloat /config (and so nexus's archives).
+BACKUPS = "false"
+UPDATE_CRON = ""
+RESTART_CRON = ""

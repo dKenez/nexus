@@ -1,12 +1,9 @@
 name: release
 
 # A `v*` tag publishes ghcr.io/dkenez/nexus:<tag>. edda pins that tag.
-# Recipe images are published by tag too (tagged with the recipe's `version`), or on demand.
 on:
   push:
     tags: ["v*"]
-  # Manual runs rebuild the recipe images only.
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,7 +11,6 @@ permissions:
 
 jobs:
   nexus:
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -37,33 +33,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  recipes:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        recipe: [valheim]
-    steps:
-      - uses: actions/checkout@v7
-      - id: recipe
-        name: Read image and version from recipe.toml
-        run: |
-          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
-          import tomllib
-          r = tomllib.load(open("recipes/${{ matrix.recipe }}/recipe.toml", "rb"))
-          print(f"ref={r['image']}:{r['version']}")
-          EOF
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v7
-        with:
-          context: recipes/${{ matrix.recipe }}
-          push: true
-          tags: ${{ steps.recipe.outputs.ref }}
-          cache-from: type=gha,scope=${{ matrix.recipe }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.recipe }}

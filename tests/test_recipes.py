@@ -13,8 +13,11 @@ def test_repo_recipes_load() -> None:
     book = RecipeBook.load(REPO_RECIPES)
     valheim = book.get("valheim")
     assert valheim.query.port == 2457
-    assert valheim.image_ref == "ghcr.io/dkenez/nexus-valheim:the-bog-witch"
-    assert valheim.secret_env_var("SERVER_PASSWORD") == "NEXUS_GAME_VALHEIM_SERVER_PASSWORD"
+    assert valheim.image_ref == "docker.io/lloesche/valheim-server:latest"
+    assert valheim.data_path == "/config"
+    assert valheim.secret_env_var("SERVER_PASS") == "NEXUS_GAME_VALHEIM_SERVER_PASS"
+    # Empty values are meaningful here (they disable the image's own cron jobs).
+    assert valheim.env["UPDATE_CRON"] == ""
 
 
 def test_unknown_recipe() -> None:

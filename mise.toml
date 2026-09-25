@@ -66,11 +66,6 @@ run = "uv run python -m nexus"
 description = "Build the nexus image"
 run = "docker build -t ghcr.io/dkenez/nexus:dev ."
 
-[tasks."build:recipe"]
-description = "Build a recipe image: mise run build:recipe valheim"
-usage = 'arg "<recipe>" default="valheim"'
-run = "docker build -t ghcr.io/dkenez/nexus-${usage_recipe}:dev recipes/${usage_recipe}"
-
 [tasks."hcloud:ls"]
 description = "Show the active hcloud context and nexus-managed resources (dev project sanity check)"
 run = [

@@ -52,13 +52,12 @@ Discord ──▶ nexus (k3s pod) ──hcloud API──▶ Hetzner: VM + Primar
 
 ## Recipes
 
-A recipe is `recipes/<name>/recipe.toml` plus the Dockerfile for its image. See [recipes/valheim](recipes/valheim).
+A recipe is `recipes/<name>/recipe.toml`: which image to run, its ports, what to back up and how to count players. See [recipes/valheim/recipe.toml](recipes/valheim/recipe.toml), which runs [`lloesche/valheim-server`](https://github.com/lloesche/valheim-server-docker), the same image the current server uses.
 
 - The image must keep everything it persists under `data_path`, which is backed up whole.
-- The image must also seed its own defaults when `data_path` is empty.
+- The image must also create its own defaults when `data_path` is empty, since that's what a brand-new world looks like.
 - Secrets listed in `secret_env` are read from `NEXUS_GAME_<GAME>_<KEY>`.
-- Recipe images are built by the release workflow as `ghcr.io/dkenez/nexus-<name>:<version>`.
-- **Make those GHCR packages public**: fresh VMs pull them anonymously. Alternatively, set `GHCR_PULL_USER` and `GHCR_PULL_TOKEN`.
+- Fresh VMs pull images anonymously. For a private GHCR image, set `GHCR_PULL_USER` and `GHCR_PULL_TOKEN`.
 
 ## Development
 
