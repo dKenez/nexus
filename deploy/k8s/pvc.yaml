@@ -1,0 +1,16 @@
+---
+# World backups on tank. Pre-bound to a static hostPath PV (edda: k8s/data/pv-apps.yaml)
+# at /mnt/apps-shared/nexus, owned by uid 2017. ZFS/sanoid snapshots of apps-shared give a
+# second layer of history on top of nexus's own retention.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nexus-backups-pvc
+  namespace: apps
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: tank-static
+  volumeName: nexus-backups-pv
+  resources:
+    requests:
+      storage: 50Gi

@@ -1,0 +1,17 @@
+---
+# Admin API only (tailnet, via Caddy on heimdall). Every /api route requires X-API-KEY;
+# /healthz and /readyz are open. Players never touch this: they connect to the Hetzner VM.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: nexus
+  namespace: apps
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`nexus.kristof.world`)
+      kind: Rule
+      services:
+        - name: nexus
+          port: 8080
