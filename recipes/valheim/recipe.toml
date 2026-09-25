@@ -1,0 +1,27 @@
+name = "valheim"
+display_name = "Valheim"
+image = "ghcr.io/dkenez/nexus-valheim"
+# Image tag. Bump when rebuilding for a new game patch.
+version = "the-bog-witch"
+enabled = true
+
+# Everything under data_path is backed up to ymir on stop and restored on start.
+data_path = "/data"
+memory_mb = 4096
+
+ports = [
+    { port = 2456, protocol = "udp" },
+    { port = 2457, protocol = "udp" },
+]
+# Valheim answers Steam A2S queries on game port + 1.
+query = { type = "a2s", port = 2457 }
+
+idle_minutes = 20
+startup_grace_minutes = 15
+# First boot generates the world, which is slow on small VMs.
+startup_timeout = 900
+stop_grace_seconds = 60
+
+env = { SERVER_NAME = "Hárfalon", WORLD_NAME = "Dedicated", SERVER_PUBLIC = "1" }
+# Read from NEXUS_GAME_VALHEIM_<KEY> in nexus's environment.
+secret_env = ["SERVER_PASSWORD"]

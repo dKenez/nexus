@@ -1,33 +1,32 @@
-FROM ubuntu:24.04
+FROM docker.io/library/ubuntu:24.04
 
-# Update and upgrade system
-RUN apt update && apt upgrade -y
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Install required tools and add multiverse repository
-RUN apt install software-properties-common -y && \
-    add-apt-repository multiverse && \
-    dpkg --add-architecture i386 && \
-    apt update
+# steamcmd lives in multiverse and needs i386; pre-accept the Steam licence.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends software-properties-common ca-certificates \
+    && add-apt-repository multiverse \
+    && dpkg --add-architecture i386 \
+    && echo steam steam/question select "I AGREE" | debconf-set-selections \
+    && echo steam steam/license note '' | debconf-set-selections \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends steamcmd \
+    && rm -rf /var/lib/apt/lists/*
 
-# Preset values for license agreement keys
-RUN echo steam steam/question select "I AGREE" | debconf-set-selections && \
-    echo steam steam/license note '' | debconf-set-selections
-
-# Install steamcmd without unnecessary dependencies
-RUN apt install steamcmd -y --no-install-recommends
-
-# Permanently add /usr/games to PATH globally and for Bash shell
 ENV PATH="/usr/games:$PATH"
-RUN echo 'export PATH="/usr/games:$PATH"' >> /root/.bashrc
-
-# update steamcmd
 RUN steamcmd +quit
 
+# The game is baked into the image; bump `version` in recipe.toml when rebuilding for a patch.
 WORKDIR /app
-COPY InstallUpdate.sh InstallUpdate.sh
-RUN chmod +x InstallUpdate.sh
-RUN bash InstallUpdate.sh
+COPY InstallUpdate.sh /usr/local/bin/install-update
+RUN chmod +x /usr/local/bin/install-update && install-update
 
-EXPOSE 2456
+COPY defaults/ /opt/nexus/defaults/
+COPY entrypoint.sh /usr/local/bin/entrypoint
+RUN chmod +x /usr/local/bin/entrypoint
 
-CMD ["bash", "valheim.sh"]
+# Everything the server persists lives under /data, which nexus backs up.
+VOLUME /data
+EXPOSE 2456/udp 2457/udp
+
+ENTRYPOINT ["/usr/local/bin/entrypoint"]
