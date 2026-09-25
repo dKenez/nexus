@@ -1,2 +1,81 @@
 [tools]
-uv = "latest"
+python = "3.13"
+uv = "0.12.19"
+prek = "0.5.3"
+# CLI for inspecting the Hetzner *dev* project only — see README "Hetzner dev safety".
+hcloud = "1.69.0"
+
+[env]
+# Local dev secrets (dev Hetzner project token, Discord test bot, ...). Gitignored.
+_.file = ".env"
+
+[tasks.setup]
+description = "Install dependencies and git hooks"
+run = [
+    "uv sync",
+    "prek install --hook-type pre-commit --hook-type commit-msg",
+]
+
+[tasks.install]
+description = "Sync the Python environment"
+run = "uv sync"
+
+[tasks.fmt]
+description = "Format the code"
+run = ["uv run ruff format", "uv run ruff check --fix"]
+
+[tasks.lint]
+description = "Lint the code"
+run = ["uv run ruff format --check", "uv run ruff check"]
+
+[tasks.typecheck]
+description = "Type-check the code"
+run = "uv run ty check"
+
+[tasks.test]
+description = "Run the test suite"
+run = "uv run pytest"
+
+[tasks.check]
+description = "Lint, type-check and test"
+depends = ["lint", "typecheck", "test"]
+
+[tasks."db:up"]
+description = "Start the local Postgres"
+run = "docker compose up -d --wait postgres"
+
+[tasks."db:down"]
+description = "Stop the local Postgres"
+run = "docker compose down"
+
+[tasks."db:migrate"]
+description = "Apply database migrations"
+run = "uv run alembic upgrade head"
+
+[tasks."db:revision"]
+description = "Autogenerate a migration: mise run db:revision -- -m 'message'"
+run = "uv run alembic revision --autogenerate"
+
+[tasks.dev]
+description = "Run nexus locally against the compose Postgres"
+depends = ["db:up"]
+env = { NEXUS_ENV = "dev", BACKUP_DIR = "{{config_root}}/.backups", RECIPES_DIR = "{{config_root}}/recipes" }
+run = "uv run python -m nexus"
+
+[tasks.build]
+description = "Build the nexus image"
+run = "docker build -t ghcr.io/dkenez/nexus:dev ."
+
+[tasks."build:recipe"]
+description = "Build a recipe image: mise run build:recipe valheim"
+usage = 'arg "<recipe>" default="valheim"'
+run = "docker build -t ghcr.io/dkenez/nexus-${usage_recipe}:dev recipes/${usage_recipe}"
+
+[tasks."hcloud:ls"]
+description = "Show the active hcloud context and nexus-managed resources (dev project sanity check)"
+run = [
+    "hcloud context active",
+    "hcloud server list --selector managed-by=nexus",
+    "hcloud primary-ip list",
+    "hcloud firewall list --selector managed-by=nexus",
+]

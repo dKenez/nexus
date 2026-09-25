@@ -1,0 +1,33 @@
+# Configuration file for `prek`, a git hook framework written in Rust.
+# See https://prek.j178.dev for more information.
+#:schema https://www.schemastore.org/prek.json
+
+# File hooks run on commit; only the message check runs at commit-msg.
+default_stages = ["pre-commit"]
+
+[[repos]]
+repo = "builtin"
+hooks = [
+    { id = "trailing-whitespace" },
+    { id = "end-of-file-fixer" },
+    { id = "check-added-large-files" },
+    { id = "check-toml" },
+    { id = "check-yaml", args = ["--allow-multiple-documents"] },
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+    { id = "ruff-format", name = "ruff format", entry = "uv run ruff format", language = "system", types = ["python"] },
+    { id = "ruff-check", name = "ruff check", entry = "uv run ruff check --fix", language = "system", types = ["python"] },
+    { id = "ty", name = "ty check", entry = "uv run ty check", language = "system", types = ["python"], pass_filenames = false },
+    { id = "uv-lock", name = "uv lock --check", entry = "uv lock --check", language = "system", files = "^(pyproject\\.toml|uv\\.lock)$", pass_filenames = false },
+]
+
+# Conventional Commits on the commit message: type(scope)!: subject
+[[repos]]
+repo = "https://github.com/compilerla/conventional-pre-commit"
+rev = "v4.4.0"
+hooks = [
+    { id = "conventional-pre-commit", stages = ["commit-msg"], args = ["--strict", "feat", "fix", "chore", "refactor", "docs", "test", "ci", "build", "perf", "style", "revert"] },
+]
