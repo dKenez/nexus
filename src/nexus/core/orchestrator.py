@@ -59,6 +59,32 @@ class CapacityError(NexusError):
     pass
 
 
+class BusyError(NexusError):
+    """Another start/stop/backup of the same game is already in progress."""
+
+
+class Operation:
+    """A reservation for one start/stop/backup of a game.
+
+    Taken synchronously (``Orchestrator.begin``) so that a caller which runs the operation in
+    the background, like the API, can reject a duplicate request immediately instead of
+    queueing it behind the first one.
+    """
+
+    def __init__(self, ops: dict[str, "Operation"], game: str, verb: str) -> None:
+        self._ops = ops
+        self.game = game
+        self.verb = verb
+
+    def release(self) -> None:
+        if self._ops.get(self.game) is self:
+            del self._ops[self.game]
+
+
+# Key for host-wide operations in the reservation table; can't collide with recipe names.
+HOST_OP = "*host*"
+
+
 class HostUnsafeError(NexusError):
     pass
 
@@ -137,6 +163,7 @@ class Orchestrator:
         self._ip: str | None = None
         # Games whose last snapshot pull failed; used to alert once per failure streak.
         self._snapshot_failing: set[str] = set()
+        self._ops: dict[str, Operation] = {}
         self._memory_mb: int | None = None
 
     # ------------------------------------------------------------------ helpers
@@ -432,7 +459,47 @@ class Orchestrator:
 
     # ------------------------------------------------------------------ games
 
-    async def start(self, game: str, progress: Progress = _no_progress) -> GameView:
+    def begin(self, game: str, verb: str, *, during_host_op: bool = False) -> Operation:
+        """Reserve ``game`` for one operation, or raise ``BusyError`` if one is in progress.
+
+        Game operations are also refused while a host-wide operation (shutdown) runs, except
+        for the ones that operation starts itself (``during_host_op``).
+        """
+        recipe = self.recipes.get(game)
+        host_op = self._ops.get(HOST_OP)
+        if host_op is not None and not during_host_op:
+            raise BusyError(f"the host is {host_op.verb}; try again when it's done")
+        current = self._ops.get(game)
+        if current is not None:
+            raise BusyError(f"{recipe.display_name} is already {current.verb}")
+        op = Operation(self._ops, game, verb)
+        self._ops[game] = op
+        return op
+
+    def begin_host(self, verb: str) -> Operation:
+        """Reserve the host for a host-wide operation, or raise ``BusyError``."""
+        current = self._ops.get(HOST_OP)
+        if current is not None:
+            raise BusyError(f"the host is already {current.verb}")
+        op = Operation(self._ops, HOST_OP, verb)
+        self._ops[HOST_OP] = op
+        return op
+
+    def operation(self, game: str) -> str | None:
+        """What is currently being done to ``game`` (e.g. "stopping"), if anything."""
+        op = self._ops.get(game)
+        return op.verb if op else None
+
+    async def start(
+        self, game: str, progress: Progress = _no_progress, *, op: Operation | None = None
+    ) -> GameView:
+        op = op or self.begin(game, "starting")
+        try:
+            return await self._start(game, progress)
+        finally:
+            op.release()
+
+    async def _start(self, game: str, progress: Progress) -> GameView:
         recipe = self._recipe(game)
         env = recipe.resolve_env(dict(self._environ))
         async with self._lock(game):
@@ -534,15 +601,24 @@ class Orchestrator:
         return False
 
     async def stop(
-        self, game: str, reason: str = "manual", progress: Progress = _no_progress
+        self,
+        game: str,
+        reason: str = "manual",
+        progress: Progress = _no_progress,
+        *,
+        op: Operation | None = None,
     ) -> GameView:
-        recipe = self.recipes.get(game)
-        async with self._lock(game):
-            await self._stop_locked(recipe, reason, progress)
-        async with self._host_lock:
-            await self._sync_firewall_quietly()
-            await self._teardown_if_empty()
-        return await self.game(game)
+        op = op or self.begin(game, "stopping")
+        try:
+            recipe = self.recipes.get(game)
+            async with self._lock(game):
+                await self._stop_locked(recipe, reason, progress)
+            async with self._host_lock:
+                await self._sync_firewall_quietly()
+                await self._teardown_if_empty()
+            return await self.game(game)
+        finally:
+            op.release()
 
     async def _stop_locked(self, recipe: Recipe, reason: str, progress: Progress) -> None:
         game = recipe.name
@@ -628,8 +704,17 @@ class Orchestrator:
                 await self._backups.delete(game, backup.filename)
                 backup.deleted_at = self._now()
 
-    async def backup(self, game: str, progress: Progress = _no_progress) -> Backup:
+    async def backup(
+        self, game: str, progress: Progress = _no_progress, *, op: Operation | None = None
+    ) -> Backup:
         """Hot backup of a running game: stop the container, archive, start it again."""
+        op = op or self.begin(game, "being backed up")
+        try:
+            return await self._backup(game, progress)
+        finally:
+            op.release()
+
+    async def _backup(self, game: str, progress: Progress) -> Backup:
         recipe = self._recipe(game)
         env = recipe.resolve_env(dict(self._environ))
         async with self._lock(game):
@@ -657,6 +742,13 @@ class Orchestrator:
         return backup
 
     async def pin_backup(self, game: str, backup_id: int) -> Backup:
+        op = self.begin(game, "changing its restore point")
+        try:
+            return await self._pin_backup(game, backup_id)
+        finally:
+            op.release()
+
+    async def _pin_backup(self, game: str, backup_id: int) -> Backup:
         recipe = self.recipes.get(game)
         async with self._lock(game):
             state = await self._state_of(game)
@@ -672,19 +764,29 @@ class Orchestrator:
                 row.pinned_backup_id = backup.id
             return backup
 
-    async def shutdown_host(self, progress: Progress = _no_progress) -> None:
+    async def shutdown_host(
+        self, progress: Progress = _no_progress, *, op: Operation | None = None
+    ) -> None:
         """Stop (and back up) every game, then delete the host."""
-        async with self._sessions() as s:
-            occupying = [st.game for st in await self._occupying(s)]
-        for game in occupying:
-            if game in self.recipes:
-                await progress(f"stopping {game}")
-                await self.stop(game, "shutdown", progress)
-        async with self._host_lock:
-            await self._teardown_if_empty()
+        op = op or self.begin_host("shutting down")
+        try:
+            async with self._sessions() as s:
+                occupying = [st.game for st in await self._occupying(s)]
+            for game in occupying:
+                if game in self.recipes:
+                    await progress(f"stopping {game}")
+                    game_op = self.begin(game, "stopping", during_host_op=True)
+                    await self.stop(game, "shutdown", progress, op=game_op)
+            async with self._host_lock:
+                await self._teardown_if_empty()
+        finally:
+            op.release()
 
     async def destroy_host(self) -> bool:
-        """Delete the host even if games have unsaved data. Admin only."""
+        """Delete the host even if games have unsaved data. Admin only.
+
+        Deliberately takes no reservation: it's the override for when something is stuck.
+        """
         async with self._host_lock:
             deleted = await self._teardown_if_empty(force=True)
             await self._sync_firewall_quietly()
@@ -757,7 +859,7 @@ class Orchestrator:
             ):
                 continue
             lock = self._lock(state.game)
-            if lock.locked():  # a start/stop/backup is in progress; try next tick
+            if state.game in self._ops or lock.locked():  # busy; try next tick
                 continue
             async with lock:
                 if (await self._state_of(state.game)).status is not GameStatus.RUNNING:

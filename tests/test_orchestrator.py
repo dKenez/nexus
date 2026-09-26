@@ -191,3 +191,44 @@ async def test_hot_backup_keeps_game_running(world: World) -> None:
     assert view.status is GameStatus.RUNNING
     assert world.agents.agent.containers_["alpha"].running
     assert len(await world.orch.backups("alpha")) == 1
+
+
+async def test_concurrent_starts_one_wins(world: World) -> None:
+    import asyncio
+
+    from nexus.core.orchestrator import BusyError
+
+    results = await asyncio.gather(
+        world.orch.start("alpha"), world.orch.start("alpha"), return_exceptions=True
+    )
+    assert sum(isinstance(r, BusyError) for r in results) == 1
+    assert world.orch.operation("alpha") is None
+    assert world.hetzner.created == 1
+
+
+async def test_idle_stop_skips_busy_game(world: World) -> None:
+    await world.orch.start("alpha")
+    op = world.orch.begin("alpha", "being backed up")
+    world.clock.advance(minutes=30)
+    assert await world.orch.poll_players() == []  # busy: left alone, no error
+    op.release()
+    assert await world.orch.poll_players() == ["alpha"]
+
+
+async def test_concurrent_starts_of_different_games_share_one_vm(world: World) -> None:
+    import asyncio
+
+    alpha, beta = await asyncio.gather(world.orch.start("alpha"), world.orch.start("beta"))
+    assert alpha.status is GameStatus.RUNNING
+    assert beta.status is GameStatus.RUNNING
+    assert world.hetzner.created == 1
+    assert {p.port for p in world.hetzner.firewall} == {2456, 2457, 3456, 3457}
+
+
+async def test_stop_during_start_is_rejected(world: World) -> None:
+    from nexus.core.orchestrator import BusyError
+
+    op = world.orch.begin("alpha", "starting")
+    with pytest.raises(BusyError, match="already starting"):
+        await world.orch.stop("alpha")
+    op.release()

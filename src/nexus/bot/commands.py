@@ -124,12 +124,17 @@ class GameGroup(app_commands.Group):
     async def start(self, interaction: discord.Interaction, game: str) -> None:
         o = orch(interaction)
         recipe = o.recipes.get(game)
+        op = o.begin(game, "starting")  # duplicate clicks get "already starting"
         progress = Progress(
             interaction, f"Starting **{recipe.display_name}** for {interaction.user.mention}"
         )
-        await progress.begin()
         try:
-            view = await o.start(game, progress)
+            await progress.begin()
+        except BaseException:
+            op.release()
+            raise
+        try:
+            view = await o.start(game, progress, op=op)
         except Exception as exc:
             await o.audit(actor(interaction), "start", game, "error", str(exc))
             await progress.finish(f"🔴 {exc}")
@@ -152,12 +157,17 @@ class GameGroup(app_commands.Group):
     async def stop(self, interaction: discord.Interaction, game: str) -> None:
         o = orch(interaction)
         recipe = o.recipes.get(game)
+        op = o.begin(game, "stopping")  # duplicate clicks get "already stopping"
         progress = Progress(
             interaction, f"Stopping **{recipe.display_name}** for {interaction.user.mention}"
         )
-        await progress.begin()
         try:
-            await o.stop(game, "manual", progress)
+            await progress.begin()
+        except BaseException:
+            op.release()
+            raise
+        try:
+            await o.stop(game, "manual", progress, op=op)
         except Exception as exc:
             await o.audit(actor(interaction), "stop", game, "error", str(exc))
             await progress.finish(f"🔴 {exc}")
@@ -173,10 +183,15 @@ class GameGroup(app_commands.Group):
     async def backup(self, interaction: discord.Interaction, game: str) -> None:
         o = orch(interaction)
         recipe = o.recipes.get(game)
+        op = o.begin(game, "being backed up")  # duplicate clicks get "already being backed up"
         progress = Progress(interaction, f"Backing up **{recipe.display_name}**")
-        await progress.begin()
         try:
-            backup = await o.backup(game, progress)
+            await progress.begin()
+        except BaseException:
+            op.release()
+            raise
+        try:
+            backup = await o.backup(game, progress, op=op)
         except Exception as exc:
             await o.audit(actor(interaction), "backup", game, "error", str(exc))
             await progress.finish(f"🔴 {exc}")
@@ -225,10 +240,15 @@ class HostGroup(app_commands.Group):
     @require(Tier.ADMIN)
     async def shutdown(self, interaction: discord.Interaction) -> None:
         o = orch(interaction)
+        op = o.begin_host("shutting down")
         progress = Progress(interaction, "Shutting down the host")
-        await progress.begin()
         try:
-            await o.shutdown_host(progress)
+            await progress.begin()
+        except BaseException:
+            op.release()
+            raise
+        try:
+            await o.shutdown_host(progress, op=op)
         except Exception as exc:
             await o.audit(actor(interaction), "host-shutdown", None, "error", str(exc))
             await progress.finish(f"🔴 {exc}")

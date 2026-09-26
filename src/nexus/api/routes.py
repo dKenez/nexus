@@ -52,10 +52,15 @@ async def get_game(game: str, orch: Orch) -> GameOut:
     tags=["games"],
 )
 async def start_game(game: str, orch: Orch, tasks: Runner) -> Accepted:
-    view = await orch.game(game)
-    if view.status not in (GameStatus.STOPPED, GameStatus.FAILED):
-        raise InvalidStateError(f"{view.recipe.display_name} is {view.status}")
-    tasks.spawn(f"start {game}", _audited(orch, "start", game, orch.start(game)))
+    op = orch.begin(game, "starting")  # a duplicate request fails here with 409
+    try:
+        view = await orch.game(game)
+        if view.status not in (GameStatus.STOPPED, GameStatus.FAILED):
+            raise InvalidStateError(f"{view.recipe.display_name} is {view.status}")
+    except BaseException:
+        op.release()
+        raise
+    tasks.spawn(f"start {game}", _audited(orch, "start", game, orch.start(game, op=op)))
     return Accepted(detail=f"starting {game}")
 
 
@@ -66,10 +71,15 @@ async def start_game(game: str, orch: Orch, tasks: Runner) -> Accepted:
     tags=["games"],
 )
 async def stop_game(game: str, orch: Orch, tasks: Runner) -> Accepted:
-    view = await orch.game(game)
-    if view.status is GameStatus.STOPPED:
-        raise InvalidStateError(f"{view.recipe.display_name} is not running")
-    tasks.spawn(f"stop {game}", _audited(orch, "stop", game, orch.stop(game)))
+    op = orch.begin(game, "stopping")
+    try:
+        view = await orch.game(game)
+        if view.status is GameStatus.STOPPED:
+            raise InvalidStateError(f"{view.recipe.display_name} is not running")
+    except BaseException:
+        op.release()
+        raise
+    tasks.spawn(f"stop {game}", _audited(orch, "stop", game, orch.stop(game, op=op)))
     return Accepted(detail=f"stopping {game}")
 
 
@@ -80,8 +90,8 @@ async def stop_game(game: str, orch: Orch, tasks: Runner) -> Accepted:
     tags=["games"],
 )
 async def backup_game(game: str, orch: Orch, tasks: Runner) -> Accepted:
-    await orch.game(game)
-    tasks.spawn(f"backup {game}", _audited(orch, "backup", game, orch.backup(game)))
+    op = orch.begin(game, "being backed up")
+    tasks.spawn(f"backup {game}", _audited(orch, "backup", game, orch.backup(game, op=op)))
     return Accepted(detail=f"backing up {game}")
 
 
@@ -112,7 +122,8 @@ async def get_host(orch: Orch) -> HostOut | None:
     "/host/shutdown", status_code=status.HTTP_202_ACCEPTED, response_model=Accepted, tags=["host"]
 )
 async def shutdown_host(orch: Orch, tasks: Runner) -> Accepted:
-    tasks.spawn("host shutdown", _audited(orch, "host-shutdown", None, orch.shutdown_host()))
+    op = orch.begin_host("shutting down")  # a duplicate request fails here with 409
+    tasks.spawn("host shutdown", _audited(orch, "host-shutdown", None, orch.shutdown_host(op=op)))
     return Accepted(detail="stopping all games and deleting the host")
 
 
