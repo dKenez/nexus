@@ -1,0 +1,16 @@
+name: mise
+description: Install mise and the tools pinned in mise.toml, and put them on PATH.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        MISE_VERSION: v2026.9.14
+      run: |
+        set -euo pipefail
+        curl -fsSL https://mise.run | sh
+        export PATH="$HOME/.local/bin:$PATH"
+        mise trust
+        mise install
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"

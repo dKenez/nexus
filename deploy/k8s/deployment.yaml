@@ -41,7 +41,7 @@ spec:
       terminationGracePeriodSeconds: 120
       containers:
         - name: nexus
-          image: ghcr.io/dkenez/nexus:v0.2.0
+          image: forgejo.kristof.world/dkenez/nexus:v0.2.0
           ports:
             - name: http
               containerPort: 8080
