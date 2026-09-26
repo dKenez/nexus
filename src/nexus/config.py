@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     # Hetzner bills each server per started hour of its life, so an empty host is kept until
     # this many seconds before its paid hour runs out (a restart meanwhile reuses it for free).
     host_billing_margin: int = Field(default=300, ge=60, le=1800)
+    # Warn (once) when a game has reported players continuously for this long: probably a
+    # missed "leave" in the log, which would keep the server (and VM) up all night.
+    players_alert_hours: float = Field(default=6, gt=0)
 
     # --- hetzner ---
     hcloud_token: SecretStr

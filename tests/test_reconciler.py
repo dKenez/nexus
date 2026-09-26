@@ -166,3 +166,24 @@ async def test_untracked_running_container_is_adopted_not_deleted(world: World) 
     assert (
         b"".join([c async for c in world.backups.read("alpha", backups[0].filename)]) == b"precious"
     )
+
+
+async def test_long_player_streak_warns_once_and_never_stops(world: World) -> None:
+    await world.orch.start("alpha")
+    world.query.players["alpha"] = 1
+    for _ in range(8):  # 8 hours of someone "on"
+        world.clock.advance(hours=1)
+        assert await world.orch.poll_players() == []
+    warnings = [e for e in world.notifier.events if e.summary.startswith("players reported")]
+    assert [e.summary for e in warnings] == ["players reported for 6h 00m"]
+    assert (await world.orch.game("alpha")).status is GameStatus.RUNNING
+
+    # The streak ends when the count drops; a new long streak warns again.
+    world.query.players["alpha"] = 0
+    world.clock.advance(minutes=1)
+    await world.orch.poll_players()
+    world.query.players["alpha"] = 2
+    for _ in range(7):
+        world.clock.advance(hours=1)
+        await world.orch.poll_players()
+    assert len([e for e in world.notifier.events if e.summary.startswith("players")]) == 2

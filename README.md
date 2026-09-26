@@ -78,6 +78,7 @@ The notify channel (`DISCORD_NOTIFY_CHANNEL_ID`) gets every lifecycle event, who
 | Stop | ⚫ **stopped and backed up** · empty for 10 minutes, with a footer "The VM stays up until 05:15 CEST; …" when the VM is kept |
 | VM deleted | ⚫ **VM deleted** · up 56m · 1 hour billed · about €0.07 |
 | Failures | 🔴 **stop failed** · … |
+| Safety cap | ⚠️ **players reported for 6h 00m**: sent once if players are counted continuously for `PLAYERS_ALERT_HOURS` (default 6). It usually means the log missed a player leaving, which would otherwise keep the VM up all night. It only warns; it never stops anything. |
 
 - **Start time** runs from the request to the server answering, so it includes creating a VM when one was needed. It's also in `GET /api/games` as `start_seconds` and `start_new_vm`.
 - **Times** are shown in `TIMEZONE`, e.g. `Europe/Copenhagen`. The default is UTC.

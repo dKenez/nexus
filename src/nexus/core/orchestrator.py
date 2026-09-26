@@ -108,6 +108,8 @@ class OrchestratorConfig:
     backup_retention: int
     # An empty host is deleted this many seconds before its current paid hour ends.
     host_billing_margin: int
+    # Warn once when players have been reported continuously for this long.
+    players_alert_hours: float = 6
     provision_timeout: int = 600
     public_hostname: str | None = None
     # Times shown to people (announcements, Discord) are in this zone.
@@ -193,6 +195,10 @@ class Orchestrator:
         # Games whose last snapshot pull failed; used to alert once per failure streak.
         self._snapshot_failing: set[str] = set()
         self._ops: dict[str, Operation] = {}
+        # Per game: since when players have been reported without a break, and whether that
+        # streak was already warned about. In memory: a restart just starts a new streak.
+        self._players_since: dict[str, datetime] = {}
+        self._players_warned: set[str] = set()
         self._memory_mb: int | None = None
 
     # ------------------------------------------------------------------ helpers
@@ -1127,6 +1133,7 @@ class Orchestrator:
             if count:
                 seen = now
             await self._set(state.game, last_player_count=count, last_player_seen_at=seen)
+            await self._check_players_streak(recipe, count, now)
             started = state.started_at or now
             in_grace = now < started + timedelta(minutes=recipe.startup_grace_minutes)
             if in_grace or now - seen < timedelta(seconds=recipe.idle_seconds):
@@ -1287,6 +1294,34 @@ class Orchestrator:
             return await self._teardown_if_empty(announce=announce)
         log.info("host %s is empty; keeping it until %s (already paid for)", name, delete_at)
         return False
+
+    async def _check_players_streak(self, recipe: Recipe, count: int | None, now: datetime) -> None:
+        """Safety cap: a game that reports players for hours on end probably missed a leave.
+
+        Only warns, once per streak; never stops a server people might be on.
+        """
+        game = recipe.name
+        if not count:
+            self._players_since.pop(game, None)
+            self._players_warned.discard(game)
+            return
+        since = self._players_since.setdefault(game, now)
+        limit = timedelta(hours=self.config.players_alert_hours)
+        if now - since < limit or game in self._players_warned:
+            return
+        self._players_warned.add(game)
+        log.warning("%s has reported players for %s", game, now - since)
+        await self.notifier.notify(
+            Event(
+                Level.WARNING,
+                recipe.display_name,
+                f"players reported for {duration(now - since)}",
+                icon="⚠️",
+                details=(f"{count} player{'s' if count != 1 else ''}",),
+                footer="If nobody is actually on, a leave was missed: /game stop saves and "
+                "stops it.",
+            )
+        )
 
     async def gc_host(self) -> bool:
         """Delete an empty READY host once its paid hour is about to run out."""

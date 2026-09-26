@@ -70,6 +70,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             host_memory_reserve_mb=settings.host_memory_reserve_mb,
             backup_retention=settings.backup_retention,
             host_billing_margin=settings.host_billing_margin,
+            players_alert_hours=settings.players_alert_hours,
             public_hostname=settings.public_hostname,
             timezone=settings.timezone,
         ),
