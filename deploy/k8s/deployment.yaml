@@ -1,0 +1,122 @@
+---
+# nexus: the game-server orchestrator. One process runs the admin API, the Discord bot
+# (outbound gateway connection, so no public ingress is needed) and the reconciler loop.
+#
+# Game servers do NOT run in the cluster: nexus provisions a Hetzner VM on demand and
+# deletes it when every game is idle. World data lives on tank (the backups PVC) between
+# sessions.
+#
+# replicas: 1 + Recreate are required, not a preference: nexus holds in-process locks
+# around VM creation/deletion, and two replicas could race to create or delete the VM.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nexus
+  namespace: apps
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: nexus
+  template:
+    metadata:
+      labels:
+        app: nexus
+    spec:
+      # A Service named `nexus` would inject NEXUS_PORT/NEXUS_SERVICE_* env vars, which
+      # collide with nexus's own NEXUS_* settings namespace.
+      enableServiceLinks: false
+      nodeSelector:
+        kubernetes.io/hostname: k3s-agent-01
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 2017
+        runAsGroup: 2017
+        seccompProfile:
+          type: RuntimeDefault
+      # Long enough for an in-flight stop to finish its backup before SIGKILL; anything
+      # cut short is settled by the startup recovery on the next pod.
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: nexus
+          image: ghcr.io/dkenez/nexus:v0.2.0
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            # Every key is an environment variable name; see secret.example.yaml.
+            - secretRef:
+                name: nexus-secret
+          env:
+            - name: NEXUS_ENV
+              value: prod
+            - name: BACKUP_DIR
+              value: /backups
+            # Name of the static Primary IP in the production Hetzner project (CHANGE ME).
+            - name: HCLOUD_PRIMARY_IP
+              value: nexus-prod
+            - name: HCLOUD_SERVER_TYPE
+              value: cx32
+            # The Cloudflare name that points at the Primary IP (CHANGE ME).
+            - name: PUBLIC_HOSTNAME
+              value: play.example.com
+            # Times in Discord and notifications.
+            - name: TIMEZONE
+              value: Europe/Copenhagen
+          volumeMounts:
+            - name: backups
+              mountPath: /backups
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      volumes:
+        - name: backups
+          persistentVolumeClaim:
+            claimName: nexus-backups-pvc
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nexus
+  namespace: apps
+spec:
+  selector:
+    app: nexus
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  type: ClusterIP

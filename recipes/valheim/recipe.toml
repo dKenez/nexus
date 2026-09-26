@@ -1,0 +1,78 @@
+name = "valheim"
+display_name = "Valheim"
+# The same image the current prod server runs: https://github.com/lloesche/valheim-server-docker
+# It downloads and updates the game itself at container start (from steamcmd).
+image = "docker.io/lloesche/valheim-server"
+version = "latest"
+enabled = true
+
+# World, admin/ban/permit lists and settings. Everything here is backed up to ymir on stop
+# and restored on start. (/opt/valheim only holds the downloaded server; not backed up.)
+data_path = "/config"
+memory_mb = 4096
+
+ports = [
+    { port = 2456, protocol = "udp" },
+    { port = 2457, protocol = "udp" },
+]
+# Readiness and players come from the server log. A2S (the Steam query on 2457) only works
+# for public servers, and this one is private like prod. The id after join/leave is the
+# player's SteamID.
+query = { type = "log", ready = "Game server connected", join = "Got handshake from client", leave = "Closing socket" }
+
+idle_minutes = 10
+# First boot downloads the server (~1 GB) before it answers queries.
+startup_grace_minutes = 15
+startup_timeout = 900
+# The image docs recommend --stop-timeout 120 so the world is saved on shutdown.
+stop_grace_seconds = 120
+
+# Read from NEXUS_GAME_VALHEIM_<KEY> in nexus's environment.
+secret_env = ["SERVER_PASS"]
+
+# Never backed up, restored or imported. What's left is the world plus the admin/ban/permit
+# lists and prefs: exactly what a restore needs.
+backup_exclude = [
+    # The image's hourly world zips; nexus copies these separately as snapshots.
+    "backups",
+    # Valheim's own rotating full copies of the world (turned off below, but an imported
+    # world may still carry old ones).
+    "worlds_local/*_backup_auto-*",
+]
+
+# Any [env] value can also be overridden per deployment with NEXUS_GAME_VALHEIM_<KEY>.
+[env]
+SERVER_NAME = "Vastness of Eternity"
+# The world's folder in worlds_local/. Must match the imported world, or Valheim creates a
+# new empty one.
+WORLD_NAME = "VoE"
+SERVER_PUBLIC = "false"
+TZ = "Europe/Copenhagen"
+# In-game snapshots: the image zips worlds_local/ hourly while players are on, and is
+# save-aware (retries if a save overlapped). nexus copies each new zip to ymir (see the
+# snapshots table below), so a lost VM costs at most about an hour of play. The count cap
+# keeps the copies inside /config, and so every full backup, small.
+BACKUPS = "true"
+BACKUPS_MAX_COUNT = "6"
+BACKUPS_IF_IDLE = "false"
+# nexus owns the lifecycle: every start is a fresh VM with a fresh server download.
+UPDATE_CRON = ""
+RESTART_CRON = ""
+# Valheim's own rotating world copies (worlds_local/<world>_backup_auto-*) are off: each is a
+# full copy of the world, they'd ride along in every nexus backup and hourly snapshot, and
+# those two layers already cover the same need.
+SERVER_ARGS = "-backups 0"
+
+# An imported /config (`nexus games import`), or a restored snapshot, must contain the world
+# named above; anything else is refused before it replaces the current world.
+[import]
+required = ["worlds_local/{WORLD_NAME}*"]
+
+# Snapshots are the image's hourly zips of worlds_local/ (save-aware). Restoring one swaps
+# its world into the newest full backup: `/game restore`.
+[snapshots]
+dir = "backups"
+pattern = "worlds-*.zip"
+check_minutes = 10
+# About two days of play at one snapshot per hour.
+keep = 48

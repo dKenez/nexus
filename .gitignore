@@ -9,6 +9,14 @@ wheels/
 # Virtual environments
 .venv
 
-# project settings
-portals/*
+# Local dev state and secrets
 .env
+.backups/
+
+# Editor settings
+.vscode/
+
+# World archives for `nexus games import` (never commit game data)
+/*.tar
+/*.tar.*
+/*.zip

@@ -1,12 +1,3 @@
-from importlib.metadata import version
+"""nexus — Hetzner game-server orchestrator with a Discord bot."""
 
-import nexus
-from nexus.utils.paths import Paths
-
-name = "nexus"
-__version__ = version(name)
-paths = Paths(nexus)
-
-
-def main() -> None:
-    print("Hello from nexus!")
+__version__ = "0.2.0"
