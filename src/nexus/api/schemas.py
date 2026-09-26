@@ -3,7 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel
 
 from nexus.core.orchestrator import GameView, HostView
-from nexus.db.models import Backup, GameStatus, HostStatus
+from nexus.db.models import Backup, GameStatus, HostStatus, Snapshot
 
 
 class GameOut(BaseModel):
@@ -85,6 +85,28 @@ class BackupOut(BaseModel):
             sha256=backup.sha256,
             reason=backup.reason,
             created_at=backup.created_at,
+        )
+
+
+class SnapshotOut(BaseModel):
+    id: int
+    game: str
+    filename: str
+    bytes: int
+    sha256: str
+    taken_at: datetime
+    pulled_at: datetime
+
+    @classmethod
+    def of(cls, snapshot: Snapshot) -> "SnapshotOut":
+        return cls(
+            id=snapshot.id,
+            game=snapshot.game,
+            filename=snapshot.filename,
+            bytes=snapshot.bytes,
+            sha256=snapshot.sha256,
+            taken_at=snapshot.taken_at,
+            pulled_at=snapshot.pulled_at,
         )
 
 

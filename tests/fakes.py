@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 from nexus.core.notify import Level
 from nexus.core.recipes import Port, Recipe
-from nexus.infra.agent import ContainerInfo, Sink
+from nexus.infra.agent import ContainerInfo, RemoteFile, RemoteListing, Sink
 from nexus.infra.hetzner import PrimaryIPInfo, ServerInfo
 
 IP = "203.0.113.10"
@@ -91,6 +91,10 @@ class FakeAgent:
     env: dict[str, dict[str, str]] = field(default_factory=dict)
     fail_archive: bool = False
     pulled: list[str] = field(default_factory=list)
+    # Files the game image wrote inside its data dir: game -> relative path -> (content, mtime)
+    files: dict[str, dict[str, tuple[bytes, float]]] = field(default_factory=dict)
+    remote_now: float = 0.0
+    fail_read: bool = False
 
     async def containers(self) -> dict[str, ContainerInfo]:
         return dict(self.containers_)
@@ -126,6 +130,20 @@ class FakeAgent:
         if self.fail_archive:
             raise RuntimeError("disk on fire")
         await sink(self.data[game])
+
+    async def list_files(self, game: str, subdir: str) -> RemoteListing:
+        prefix = subdir + "/"
+        files = [
+            RemoteFile(name=path.removeprefix(prefix), size=len(content), mtime=mtime)
+            for path, (content, mtime) in self.files.get(game, {}).items()
+            if path.startswith(prefix) and "/" not in path.removeprefix(prefix)
+        ]
+        return RemoteListing(now=self.remote_now, files=files)
+
+    async def read_file(self, game: str, path: str, sink: Sink) -> None:
+        if self.fail_read:
+            raise RuntimeError("connection reset")
+        await sink(self.files[game][path][0])
 
 
 @dataclass

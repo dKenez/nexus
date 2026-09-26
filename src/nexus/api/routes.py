@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, status
 
-from nexus.api.schemas import Accepted, BackupOut, GameOut, HostOut
+from nexus.api.schemas import Accepted, BackupOut, GameOut, HostOut, SnapshotOut
 from nexus.core.orchestrator import InvalidStateError, Orchestrator
 from nexus.core.tasks import TaskRunner
 from nexus.db.models import GameStatus
@@ -88,6 +88,11 @@ async def backup_game(game: str, orch: Orch, tasks: Runner) -> Accepted:
 @router.get("/games/{game}/backups", response_model=list[BackupOut], tags=["games"])
 async def list_backups(game: str, orch: Orch) -> list[BackupOut]:
     return [BackupOut.of(b) for b in await orch.backups(game)]
+
+
+@router.get("/games/{game}/snapshots", response_model=list[SnapshotOut], tags=["games"])
+async def list_snapshots(game: str, orch: Orch) -> list[SnapshotOut]:
+    return [SnapshotOut.of(s) for s in await orch.snapshots(game)]
 
 
 @router.post("/games/{game}/restore", response_model=BackupOut, tags=["games"])

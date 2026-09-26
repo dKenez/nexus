@@ -5,7 +5,7 @@ from datetime import datetime
 import discord
 
 from nexus.core.orchestrator import GameView, HostView
-from nexus.db.models import Backup, GameStatus, HostStatus
+from nexus.db.models import Backup, GameStatus, HostStatus, Snapshot
 
 STATUS_ICON = {
     GameStatus.STOPPED: "⚫",
@@ -91,10 +91,15 @@ def host_embed(
     return embed
 
 
-def backups_text(game: str, backups: list[Backup]) -> str:
+def backups_text(game: str, backups: list[Backup], snapshots: list[Snapshot]) -> str:
+    lines = [f"**Backups for {game}** (full, taken on stop; newest first)"]
     if not backups:
-        return f"No backups for {game} yet."
-    lines = [f"**Backups for {game}** (newest first)"]
-    for b in backups[:15]:
+        lines.append("none yet")
+    for b in backups[:12]:
         lines.append(f"`#{b.id}` {b.created_at:%Y-%m-%d %H:%M} UTC · {size(b.bytes)} · {b.reason}")
-    return "\n".join(lines)
+    if snapshots:
+        lines.append("")
+        lines.append("**In-game snapshots** copied to ymir while running (newest first)")
+        for sn in snapshots[:8]:
+            lines.append(f"{sn.taken_at:%Y-%m-%d %H:%M} UTC · {size(sn.bytes)} · `{sn.filename}`")
+    return "\n".join(lines)[:2000]

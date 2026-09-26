@@ -17,6 +17,7 @@ class Reconciler:
     async def tick(self) -> None:
         await self._orchestrator.reconcile_hosts()
         await self._orchestrator.poll_players()
+        await self._orchestrator.pull_snapshots()
         await self._orchestrator.gc_host()
 
     async def run(self) -> None:

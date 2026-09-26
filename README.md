@@ -25,7 +25,7 @@ Discord ──▶ nexus (k3s pod) ──hcloud API──▶ Hetzner: VM + Primar
 | Step | What happens |
 |---|---|
 | start | Capacity is checked (the sum of each game's `memory_mb` against the VM's memory). A VM is provisioned if none exists and the firewall is opened. The world is restored and the container is run. |
-| running | Players are polled every `RECONCILE_INTERVAL` seconds. An empty game past its startup grace and `idle_minutes` is stopped. |
+| running | Players are polled every `RECONCILE_INTERVAL` seconds. An empty game past its startup grace and `idle_minutes` is stopped. If the recipe has `[snapshots]`, each new in-game snapshot is copied to `/backups/<game>/snapshots/`. |
 | stop | `docker stop` lets the server save. The data directory is streamed to `/backups` (written atomically). Old backups are pruned, and the VM is deleted if nothing else runs on it. |
 
 **Safety rules:**
@@ -36,6 +36,20 @@ Discord ──▶ nexus (k3s pod) ──hcloud API──▶ Hetzner: VM + Primar
   - the one configured Primary IP
   - the `nexus-host` firewall
 - **Startup recovery:** after a restart nexus re-reads Hetzner and the VM's containers, then settles any operation that was interrupted.
+
+## Backups and snapshots
+
+There are two layers:
+
+- **Full backups** (`/backups/<game>/*.tar.zst`) are the whole data directory, taken on every stop and by `/game backup`. They're what a start restores, and the last `BACKUP_RETENTION` are kept.
+- **Snapshots** (`/backups/<game>/snapshots/`) are copies of the files the game image writes by itself while it runs. For Valheim that's the image's hourly, save-aware `worlds_local` zips. nexus copies the newest one to ymir within `check_minutes` of it appearing and keeps the last `keep`. They cover what full backups can't: losing the VM mid-session, or wanting to roll back to an hour ago.
+
+Restoring from a snapshot is manual for now:
+1. Unpack the latest full backup.
+2. Replace its `worlds_local/` with the snapshot's contents.
+3. Re-pack it as a new backup.
+
+A `nexus games import` command would make this one step, and would also cover migrating the current prod world.
 
 ## Discord commands
 

@@ -18,6 +18,7 @@ def test_repo_recipes_load() -> None:
     assert valheim.secret_env_var("SERVER_PASS") == "NEXUS_GAME_VALHEIM_SERVER_PASS"
     # Empty values are meaningful here (they disable the image's own cron jobs).
     assert valheim.env["UPDATE_CRON"] == ""
+    assert valheim.snapshots is not None and valheim.snapshots.dir == "backups"
 
 
 def test_unknown_recipe() -> None:

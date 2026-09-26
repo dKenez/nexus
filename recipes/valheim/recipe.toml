@@ -34,8 +34,19 @@ SERVER_NAME = "Hárfalon"
 WORLD_NAME = "Dedicated"
 SERVER_PUBLIC = "true"
 TZ = "Europe/Copenhagen"
-# nexus owns backups and lifecycle: every start is a fresh VM with a fresh download, and
-# the image's own backups would only bloat /config (and so nexus's archives).
-BACKUPS = "false"
+# In-game snapshots: the image zips worlds_local/ hourly while players are on, and is
+# save-aware (retries if a save overlapped). nexus copies each new zip to ymir (see
+# [snapshots]), so a lost VM costs at most about an hour of play. The count cap keeps the
+# copies inside /config, and so every full backup, small.
+BACKUPS = "true"
+BACKUPS_MAX_COUNT = "6"
+BACKUPS_IF_IDLE = "false"
+# nexus owns the lifecycle: every start is a fresh VM with a fresh server download.
 UPDATE_CRON = ""
 RESTART_CRON = ""
+
+[snapshots]
+dir = "backups"
+check_minutes = 10
+# About two days of play at one snapshot per hour.
+keep = 48

@@ -40,6 +40,34 @@ class Query(BaseModel):
         return self
 
 
+class Snapshots(BaseModel):
+    """Periodic snapshots the game image writes itself, which nexus copies off the VM.
+
+    Full backups only happen when a game stops. If the image makes consistent in-game
+    snapshots (e.g. lloesche/valheim-server's hourly world zips), nexus pulls the newest one
+    to ymir while the game runs, so a lost VM costs at most one snapshot interval.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    # Directory the image writes snapshot files to, relative to data_path.
+    dir: str
+    # How often to look for a new snapshot.
+    check_minutes: int = Field(default=10, ge=1)
+    # How many pulled snapshots to keep on ymir per game.
+    keep: int = Field(default=48, ge=1)
+    # A file must be unmodified this long before it's pulled, so a half-written one isn't.
+    settle_seconds: int = Field(default=120, ge=0)
+
+    @field_validator("dir")
+    @classmethod
+    def _relative(cls, value: str) -> str:
+        parts = value.strip("/").split("/")
+        if value.startswith("/") or ".." in parts or not value.strip("/"):
+            raise ValueError("snapshots.dir must be a relative path inside data_path")
+        return value.strip("/")
+
+
 class Recipe(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -58,6 +86,7 @@ class Recipe(BaseModel):
     stop_grace_seconds: int = Field(default=60, ge=1)
     env: dict[str, str] = {}
     secret_env: tuple[str, ...] = ()
+    snapshots: Snapshots | None = None
 
     @field_validator("name")
     @classmethod

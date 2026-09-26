@@ -91,3 +91,9 @@ async def test_destroy_needs_force(client: httpx.AsyncClient) -> None:
     assert (await client.post("/api/host/destroy")).status_code == 409
     response = await client.post("/api/host/destroy", params={"force": True})
     assert response.json()["accepted"] is False
+
+
+async def test_list_snapshots(client: httpx.AsyncClient) -> None:
+    response = await client.get("/api/games/alpha/snapshots")
+    assert response.status_code == 200
+    assert response.json() == []

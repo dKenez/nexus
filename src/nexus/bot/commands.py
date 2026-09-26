@@ -188,7 +188,8 @@ class GameGroup(app_commands.Group):
     @app_commands.autocomplete(game=game_autocomplete)
     @require(Tier.ADMIN)
     async def backups(self, interaction: discord.Interaction, game: str) -> None:
-        text = render.backups_text(game, await orch(interaction).backups(game))
+        o = orch(interaction)
+        text = render.backups_text(game, await o.backups(game), await o.snapshots(game))
         await interaction.response.send_message(text, ephemeral=True)
 
     @app_commands.command(description="Use a specific backup the next time a game starts")

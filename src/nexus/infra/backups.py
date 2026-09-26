@@ -13,6 +13,7 @@ from pathlib import Path
 from nexus.infra.agent import CHUNK, Sink
 
 FILENAME_RE = re.compile(r"^\d{8}T\d{6}Z-[a-z]+\.tar\.zst$")
+SNAPSHOT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 @dataclass(frozen=True)
@@ -55,9 +56,28 @@ class BackupStore:
         *,
         now: datetime,
     ) -> WrittenBackup:
-        """Write an archive atomically: stream to ``.partial``, fsync, then rename."""
+        """Write a full archive of a game's data directory."""
         filename = f"{now:%Y%m%dT%H%M%SZ}-{reason}.tar.zst"
-        final = self.path(game, filename)
+        return await self._write_atomic(self.path(game, filename), produce)
+
+    def snapshot_path(self, game: str, name: str) -> Path:
+        if not SNAPSHOT_NAME_RE.match(name):
+            raise BackupError(f"invalid snapshot filename {name!r}")
+        return self.game_dir(game) / "snapshots" / name
+
+    async def write_snapshot(
+        self, game: str, name: str, produce: Callable[[Sink], Awaitable[None]]
+    ) -> WrittenBackup:
+        """Store a snapshot file (made by the game image itself) under its own name."""
+        return await self._write_atomic(self.snapshot_path(game, name), produce)
+
+    async def delete_snapshot(self, game: str, name: str) -> None:
+        await asyncio.to_thread(self.snapshot_path(game, name).unlink, missing_ok=True)
+
+    async def _write_atomic(
+        self, final: Path, produce: Callable[[Sink], Awaitable[None]]
+    ) -> WrittenBackup:
+        """Stream to ``.partial``, fsync, then rename, so a file under its final name is whole."""
         partial = final.with_name(final.name + ".partial")
         await asyncio.to_thread(final.parent.mkdir, parents=True, exist_ok=True)
 
@@ -82,9 +102,9 @@ class BackupStore:
         f.close()
         if size == 0:
             partial.unlink(missing_ok=True)
-            raise BackupError(f"backup of {game} produced no data")
+            raise BackupError(f"{final.name} would be empty")
         await asyncio.to_thread(partial.rename, final)
-        return WrittenBackup(filename=filename, bytes=size, sha256=digest.hexdigest())
+        return WrittenBackup(filename=final.name, bytes=size, sha256=digest.hexdigest())
 
     async def read(self, game: str, filename: str) -> AsyncIterator[bytes]:
         path = self.path(game, filename)

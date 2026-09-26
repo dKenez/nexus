@@ -70,6 +70,11 @@ def games_backups(game: str) -> None:
     _call("GET", f"/games/{game}/backups")
 
 
+@games.command("snapshots")
+def games_snapshots(game: str) -> None:
+    _call("GET", f"/games/{game}/snapshots")
+
+
 @games.command("restore")
 def games_restore(game: str, backup_id: int) -> None:
     _call("POST", f"/games/{game}/restore", params={"backup_id": backup_id})

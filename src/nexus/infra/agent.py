@@ -39,6 +39,32 @@ class ContainerInfo:
     status: str
 
 
+@dataclass(frozen=True)
+class RemoteFile:
+    name: str
+    size: int
+    mtime: float
+
+
+@dataclass(frozen=True)
+class RemoteListing:
+    # The host's clock at listing time; mtimes are compared against it, not against ours.
+    now: float
+    files: list[RemoteFile]
+
+
+def parse_listing(output: str) -> RemoteListing:
+    lines = output.splitlines()
+    now = float(lines[0])
+    files = []
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        name, size, mtime = line.rsplit("\t", 2)
+        files.append(RemoteFile(name=name, size=int(size), mtime=float(mtime)))
+    return RemoteListing(now=now, files=files)
+
+
 def data_dir(game: str) -> str:
     return f"{GAMES_DIR}/{game}/data"
 
@@ -57,6 +83,8 @@ class HostAgent(Protocol):
     async def stop_container(self, recipe: Recipe) -> None: ...
     async def remove_container(self, recipe: Recipe) -> None: ...
     async def archive(self, game: str, sink: Sink) -> None: ...
+    async def list_files(self, game: str, subdir: str) -> RemoteListing: ...
+    async def read_file(self, game: str, path: str, sink: Sink) -> None: ...
 
 
 class AgentFactory(Protocol):
@@ -182,6 +210,23 @@ class SshHostAgent:
             result = await proc.wait()
         if result.exit_status != 0:
             raise AgentError(f"archive of {game} failed: {result.stderr!r}")
+
+    async def list_files(self, game: str, subdir: str) -> RemoteListing:
+        directory = shlex.quote(f"{data_dir(game)}/{subdir}")
+        out = await self._run(
+            f"date +%s.%N; sudo find {directory} -maxdepth 1 -type f "
+            f"-printf '%f\\t%s\\t%T@\\n' 2>/dev/null || true"
+        )
+        return parse_listing(out)
+
+    async def read_file(self, game: str, path: str, sink: Sink) -> None:
+        target = shlex.quote(f"{data_dir(game)}/{path}")
+        async with self._conn.create_process(f"sudo cat -- {target}", encoding=None) as proc:
+            while chunk := await proc.stdout.read(CHUNK):
+                await sink(chunk)
+            result = await proc.wait()
+        if result.exit_status != 0:
+            raise AgentError(f"reading {path} of {game} failed: {result.stderr!r}")
 
 
 class SshAgentFactory:

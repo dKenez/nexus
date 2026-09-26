@@ -16,16 +16,25 @@ import logging
 import os
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from nexus.core.notify import Level, Notifier
 from nexus.core.recipes import Recipe, RecipeBook
-from nexus.db.models import AuditLog, Backup, GameState, GameStatus, Host, HostStatus, utcnow
+from nexus.db.models import (
+    AuditLog,
+    Backup,
+    GameState,
+    GameStatus,
+    Host,
+    HostStatus,
+    Snapshot,
+    utcnow,
+)
 from nexus.infra.agent import AgentFactory, HostAgent
-from nexus.infra.backups import BackupStore
+from nexus.infra.backups import SNAPSHOT_NAME_RE, BackupStore
 from nexus.infra.hetzner import HetznerGateway
 from nexus.query.base import PlayerQuery, query_players
 
@@ -126,6 +135,8 @@ class Orchestrator:
         self._host_lock = asyncio.Lock()
         self._game_locks: dict[str, asyncio.Lock] = {}
         self._ip: str | None = None
+        # Games whose last snapshot pull failed; used to alert once per failure streak.
+        self._snapshot_failing: set[str] = set()
         self._memory_mb: int | None = None
 
     # ------------------------------------------------------------------ helpers
@@ -241,6 +252,16 @@ class Orchestrator:
                 select(Backup)
                 .where(Backup.game == game, Backup.deleted_at.is_(None))
                 .order_by(Backup.created_at.desc())
+            )
+            return list(result.scalars())
+
+    async def snapshots(self, game: str) -> list[Snapshot]:
+        self.recipes.get(game)
+        async with self._sessions() as s:
+            result = await s.execute(
+                select(Snapshot)
+                .where(Snapshot.game == game, Snapshot.deleted_at.is_(None))
+                .order_by(Snapshot.taken_at.desc())
             )
             return list(result.scalars())
 
@@ -710,6 +731,109 @@ class Orchestrator:
             )
             stopped.append(state.game)
         return stopped
+
+    async def pull_snapshots(self) -> list[str]:
+        """Copy the newest in-game snapshot of each running game to ymir, when due.
+
+        Returns the filenames that were pulled.
+        """
+        pulled: list[str] = []
+        async with self._sessions() as s:
+            running = list(
+                (
+                    await s.execute(select(GameState).where(GameState.status == GameStatus.RUNNING))
+                ).scalars()
+            )
+        for state in running:
+            if state.game not in self.recipes:
+                continue
+            recipe = self.recipes.get(state.game)
+            if recipe.snapshots is None:
+                continue
+            now = self._now()
+            last = state.last_snapshot_check_at or state.started_at or now
+            if state.last_snapshot_check_at is not None and now - last < timedelta(
+                minutes=recipe.snapshots.check_minutes
+            ):
+                continue
+            lock = self._lock(state.game)
+            if lock.locked():  # a start/stop/backup is in progress; try next tick
+                continue
+            async with lock:
+                if (await self._state_of(state.game)).status is not GameStatus.RUNNING:
+                    continue
+                try:
+                    name = await self._pull_snapshot(recipe)
+                except Exception as exc:
+                    log.warning("pulling a snapshot of %s failed: %s", state.game, exc)
+                    if state.game not in self._snapshot_failing:
+                        self._snapshot_failing.add(state.game)
+                        await self.notifier.notify(
+                            Level.WARNING,
+                            f"Couldn't copy {recipe.display_name}'s latest snapshot to ymir: {exc}",
+                        )
+                else:
+                    self._snapshot_failing.discard(state.game)
+                    if name:
+                        pulled.append(name)
+                finally:
+                    await self._set(state.game, last_snapshot_check_at=now)
+        return pulled
+
+    async def _pull_snapshot(self, recipe: Recipe) -> str | None:
+        config = recipe.snapshots
+        assert config is not None
+        game = recipe.name
+        async with self._agents.connect(await self.ip()) as agent:
+            listing = await agent.list_files(game, config.dir)
+            settled = [
+                f
+                for f in listing.files
+                if listing.now - f.mtime >= config.settle_seconds
+                and SNAPSHOT_NAME_RE.match(f.name)
+                and not f.name.endswith(".partial")
+            ]
+            if not settled:
+                return None
+            newest = max(settled, key=lambda f: f.mtime)
+            async with self._sessions() as s:
+                known = await s.execute(
+                    select(Snapshot.id).where(
+                        Snapshot.game == game, Snapshot.filename == newest.name
+                    )
+                )
+                if known.first() is not None:
+                    return None
+            written = await self._backups.write_snapshot(
+                game,
+                newest.name,
+                lambda sink: agent.read_file(game, f"{config.dir}/{newest.name}", sink),
+            )
+        async with self._sessions() as s, s.begin():
+            s.add(
+                Snapshot(
+                    game=game,
+                    filename=written.filename,
+                    bytes=written.bytes,
+                    sha256=written.sha256,
+                    taken_at=datetime.fromtimestamp(newest.mtime, UTC),
+                    pulled_at=self._now(),
+                )
+            )
+        await self._prune_snapshots(game, config.keep)
+        log.info("pulled snapshot %s of %s (%d bytes)", written.filename, game, written.bytes)
+        return written.filename
+
+    async def _prune_snapshots(self, game: str, keep: int) -> None:
+        async with self._sessions() as s, s.begin():
+            result = await s.execute(
+                select(Snapshot)
+                .where(Snapshot.game == game, Snapshot.deleted_at.is_(None))
+                .order_by(Snapshot.taken_at.desc(), Snapshot.id.desc())
+            )
+            for snapshot in list(result.scalars())[keep:]:
+                await self._backups.delete_snapshot(game, snapshot.filename)
+                snapshot.deleted_at = self._now()
 
     async def gc_host(self) -> bool:
         """Delete a READY host that has been empty for longer than the grace period."""
