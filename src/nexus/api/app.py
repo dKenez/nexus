@@ -7,6 +7,7 @@ from sqlalchemy import text
 from nexus import __version__
 from nexus.api.auth import verify_api_key
 from nexus.api.routes import router
+from nexus.core.importer import ArchiveError
 from nexus.core.orchestrator import CapacityError, NexusError
 from nexus.core.recipes import MissingSecretError, RecipeNotFoundError
 
@@ -26,6 +27,13 @@ def build_api(**kwargs: object) -> FastAPI:
     @api.exception_handler(NexusError)
     async def _conflict(_: Request, exc: NexusError) -> JSONResponse:
         return JSONResponse({"detail": str(exc)}, status_code=status.HTTP_409_CONFLICT)
+
+    @api.exception_handler(ArchiveError)
+    async def _archive(_: Request, exc: ArchiveError) -> JSONResponse:
+        return JSONResponse(
+            {"detail": f"import refused: {exc}"},
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
 
     @api.exception_handler(MissingSecretError)
     async def _secret(_: Request, exc: MissingSecretError) -> JSONResponse:

@@ -56,6 +56,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     backups = BackupStore(settings.backup_dir)
     await backups.check_writable()
+    await backups.clear_incoming()
 
     keys = HostKeys(
         client_private=settings.ssh_client_key.get_secret_value(),

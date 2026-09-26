@@ -14,6 +14,8 @@ def test_repo_recipes_load() -> None:
     valheim = book.get("valheim")
     assert valheim.query.port == 2457
     assert valheim.image_ref == "docker.io/lloesche/valheim-server:latest"
+    assert valheim.env["WORLD_NAME"] == "VoE"
+    assert valheim.import_.exclude == ("backups",)
     assert valheim.data_path == "/config"
     assert valheim.secret_env_var("SERVER_PASS") == "NEXUS_GAME_VALHEIM_SERVER_PASS"
     # Empty values are meaningful here (they disable the image's own cron jobs).
@@ -63,3 +65,11 @@ def test_directory_must_match_name(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="does not match"):
         RecipeBook.load(tmp_path)
+
+
+def test_env_values_can_be_overridden_per_deployment() -> None:
+    r = recipe("xy", env={"SERVER_NAME": "Prod", "TZ": "UTC"})
+    env = r.resolve_env(
+        {"NEXUS_GAME_XY_SERVER_PASSWORD": "pw", "NEXUS_GAME_XY_SERVER_NAME": "Prod (dev)"}
+    )
+    assert env == {"SERVER_NAME": "Prod (dev)", "TZ": "UTC", "SERVER_PASSWORD": "pw"}

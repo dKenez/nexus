@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, status
 
-from nexus.api.schemas import Accepted, BackupOut, GameOut, HostOut, SnapshotOut
+from nexus.api.schemas import Accepted, BackupOut, GameOut, HostOut, ImportOut, SnapshotOut
 from nexus.core.orchestrator import InvalidStateError, Orchestrator
 from nexus.core.tasks import TaskRunner
 from nexus.db.models import GameStatus
@@ -110,6 +110,35 @@ async def pin_backup(game: str, orch: Orch, backup_id: Annotated[int, Query()]) 
     backup = await orch.pin_backup(game, backup_id)
     await orch.audit(ACTOR, "restore", game, "ok", backup.filename)
     return BackupOut.of(backup)
+
+
+@router.post("/games/{game}/import", response_model=ImportOut, tags=["games"])
+async def import_backup(game: str, request: Request, orch: Orch) -> ImportOut:
+    """Upload an archive of the game's data directory (tar, tar.gz, tar.zst or zip) as its
+    newest backup. The game must be stopped; its next start restores the import."""
+    op = orch.begin(game, "importing")  # reserve before accepting a large upload
+    try:
+        view = await orch.game(game)
+        if view.status is not GameStatus.STOPPED:
+            raise InvalidStateError(f"stop {view.recipe.display_name} before importing")
+        upload = await orch.receive_upload(request.stream())
+    except BaseException:
+        op.release()
+        raise
+    try:
+        backup, report = await orch.import_backup(game, upload, op=op)
+    except Exception as exc:
+        await orch.audit(ACTOR, "import", game, "error", str(exc))
+        raise
+    await orch.audit(ACTOR, "import", game, "ok", f"{backup.filename}, {report.files} files")
+    return ImportOut(
+        backup=BackupOut.of(backup),
+        files=report.files,
+        bytes=report.bytes,
+        stripped=report.stripped,
+        excluded=report.excluded,
+        skipped=report.skipped,
+    )
 
 
 @router.get("/host", response_model=HostOut | None, tags=["host"])

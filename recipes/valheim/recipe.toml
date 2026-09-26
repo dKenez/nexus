@@ -28,22 +28,31 @@ stop_grace_seconds = 120
 # Read from NEXUS_GAME_VALHEIM_<KEY> in nexus's environment.
 secret_env = ["SERVER_PASS"]
 
+# Any [env] value can also be overridden per deployment with NEXUS_GAME_VALHEIM_<KEY>.
 [env]
-SERVER_NAME = "Hárfalon"
-# Must match the directory in worlds_local/ of the migrated world.
-WORLD_NAME = "Dedicated"
-SERVER_PUBLIC = "true"
+SERVER_NAME = "Vastness of Eternity"
+# The world's folder in worlds_local/. Must match the imported world, or Valheim creates a
+# new empty one.
+WORLD_NAME = "VoE"
+SERVER_PUBLIC = "false"
 TZ = "Europe/Copenhagen"
 # In-game snapshots: the image zips worlds_local/ hourly while players are on, and is
-# save-aware (retries if a save overlapped). nexus copies each new zip to ymir (see
-# [snapshots]), so a lost VM costs at most about an hour of play. The count cap keeps the
-# copies inside /config, and so every full backup, small.
+# save-aware (retries if a save overlapped). nexus copies each new zip to ymir (see the
+# snapshots table below), so a lost VM costs at most about an hour of play. The count cap
+# keeps the copies inside /config, and so every full backup, small.
 BACKUPS = "true"
 BACKUPS_MAX_COUNT = "6"
 BACKUPS_IF_IDLE = "false"
 # nexus owns the lifecycle: every start is a fresh VM with a fresh server download.
 UPDATE_CRON = ""
 RESTART_CRON = ""
+
+# `nexus games import valheim <archive>` checks and cleans an imported /config:
+[import]
+# it must contain the world named above...
+required = ["worlds_local/{WORLD_NAME}*"]
+# ...and the image's own snapshot zips are left out (they can be large and aren't needed).
+exclude = ["backups"]
 
 [snapshots]
 dir = "backups"

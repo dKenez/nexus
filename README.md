@@ -44,12 +44,29 @@ There are two layers:
 - **Full backups** (`/backups/<game>/*.tar.zst`) are the whole data directory, taken on every stop and by `/game backup`. They're what a start restores, and the last `BACKUP_RETENTION` are kept.
 - **Snapshots** (`/backups/<game>/snapshots/`) are copies of the files the game image writes by itself while it runs. For Valheim that's the image's hourly, save-aware `worlds_local` zips. nexus copies the newest one to ymir within `check_minutes` of it appearing and keeps the last `keep`. They cover what full backups can't: losing the VM mid-session, or wanting to roll back to an hour ago.
 
-Restoring from a snapshot is manual for now:
-1. Unpack the latest full backup.
-2. Replace its `worlds_local/` with the snapshot's contents.
-3. Re-pack it as a new backup.
+### Importing a world
 
-A `nexus games import` command would make this one step, and would also cover migrating the current prod world.
+`nexus games import <game> <archive>` uploads an archive of a game's data directory and makes it the game's newest backup, so the next start restores it. The game must be stopped.
+
+- **Formats:** `.tar`, `.tar.gz`, `.tar.zst` or `.zip`, made from the directory itself or from its parent. A single wrapping directory such as `config/` is removed automatically.
+- **Checks:** the recipe's `[import]` table decides what's required and what's left out. For Valheim, the world named `WORLD_NAME` must be in `worlds_local/`, otherwise the import is refused before anything changes. The image's own `backups/` zips are dropped.
+- **Safety:** absolute paths and `..` are refused, and links and device files are skipped.
+
+**Moving the current Valheim server to nexus:**
+1. On the old host, stop the server so the world is saved, then copy its data out:
+   ```sh
+   docker stop valheim
+   docker cp valheim:/config - > voe-config.tar
+   ```
+2. Import it into the stopped game:
+   ```sh
+   uv run nexus games import valheim voe-config.tar
+   ```
+3. Run `/game start valheim` and check the world.
+
+To try it in dev first without stopping prod, skip `docker stop`. A copy taken while the server runs can catch a save halfway. That's fine for a test, but not for the real move.
+
+**Restoring from a snapshot** is still manual. Unpack the latest full backup, replace its `worlds_local/` with the snapshot's contents, and import the result.
 
 ## Discord commands
 

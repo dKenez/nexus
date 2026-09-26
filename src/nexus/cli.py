@@ -5,6 +5,8 @@ Reads NEXUS_URL (default http://localhost:8080) and NEXUS_API_TOKEN from the env
 
 import json
 import os
+from collections.abc import Iterator
+from pathlib import Path
 from typing import Annotated, Any
 
 import httpx
@@ -78,6 +80,36 @@ def games_snapshots(game: str) -> None:
 @games.command("restore")
 def games_restore(game: str, backup_id: int) -> None:
     _call("POST", f"/games/{game}/restore", params={"backup_id": backup_id})
+
+
+@games.command("import")
+def games_import(
+    game: str,
+    archive: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+) -> None:
+    """Upload an archive of GAME's data directory as its newest backup (game must be stopped).
+
+    Accepts .tar, .tar.gz, .tar.zst or .zip, made from the directory itself or from its parent,
+    e.g. `docker cp valheim:/config - > config.tar`.
+    """
+
+    def chunks() -> Iterator[bytes]:
+        with archive.open("rb") as f:
+            while chunk := f.read(1 << 20):
+                yield chunk
+
+    size = archive.stat().st_size
+    typer.echo(f"uploading {archive} ({size / 1e6:.1f} MB)...", err=True)
+    with _client() as client:
+        client.timeout = httpx.Timeout(30, read=None, write=None)
+        response = client.post(
+            f"/games/{game}/import",
+            content=chunks(),
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    typer.echo(json.dumps(response.json(), indent=2, default=str))
+    if response.is_error:
+        raise typer.Exit(1)
 
 
 @host.command("status")

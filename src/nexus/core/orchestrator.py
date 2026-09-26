@@ -14,13 +14,15 @@ anything that creates/deletes the host, changes the firewall or claims host capa
 import asyncio
 import logging
 import os
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from nexus.core.importer import ImportReport, normalize_archive
 from nexus.core.notify import Level, Notifier
 from nexus.core.recipes import Recipe, RecipeBook
 from nexus.db.models import (
@@ -763,6 +765,57 @@ class Orchestrator:
                 row = await self._get_state(s, game)
                 row.pinned_backup_id = backup.id
             return backup
+
+    async def receive_upload(self, chunks: AsyncIterator[bytes]) -> Path:
+        """Store an uploaded archive next to the backups, for ``import_backup``."""
+        return await self._backups.receive(chunks)
+
+    async def import_backup(
+        self, game: str, upload: Path, *, op: Operation | None = None
+    ) -> tuple[Backup, ImportReport]:
+        """Make an archive of a game's data directory its newest backup.
+
+        The game must be stopped; its next start restores the import. The upload is consumed.
+        """
+        op = op or self.begin(game, "importing")
+        normalized = self._backups.scratch_path(".tar.zst")
+        try:
+            recipe = self.recipes.get(game)
+            async with self._lock(game):
+                state = await self._state_of(game)
+                if state.status is not GameStatus.STOPPED:
+                    raise InvalidStateError(
+                        f"stop {recipe.display_name} before importing (it is {state.status})"
+                    )
+                report = await asyncio.to_thread(
+                    normalize_archive,
+                    upload,
+                    normalized,
+                    recipe.import_,
+                    recipe.env_values(dict(self._environ)),
+                    scratch=self._backups.incoming_dir,
+                )
+                written = await self._backups.adopt(game, "import", normalized, now=self._now())
+                async with self._sessions() as s, s.begin():
+                    backup = Backup(
+                        game=game,
+                        filename=written.filename,
+                        bytes=written.bytes,
+                        sha256=written.sha256,
+                        reason="import",
+                        created_at=self._now(),
+                    )
+                    s.add(backup)
+                    # The next start must use the import, not an earlier pinned backup.
+                    row = await self._get_state(s, game)
+                    row.pinned_backup_id = None
+                await self._prune(game)
+            log.info("imported %s as %s (%d files)", game, written.filename, report.files)
+            return backup, report
+        finally:
+            op.release()
+            await asyncio.to_thread(upload.unlink, missing_ok=True)
+            await asyncio.to_thread(normalized.unlink, missing_ok=True)
 
     async def shutdown_host(
         self, progress: Progress = _no_progress, *, op: Operation | None = None

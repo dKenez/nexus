@@ -5,6 +5,8 @@ import hashlib
 import io
 import os
 import re
+import shutil
+import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -38,6 +40,54 @@ class BackupStore:
         if not FILENAME_RE.match(filename):
             raise BackupError(f"invalid backup filename {filename!r}")
         return self.game_dir(game) / filename
+
+    @property
+    def incoming_dir(self) -> Path:
+        """Uploads and import scratch space. On the same filesystem as the backups, so an
+        imported archive is moved into place, not copied, and never lands in a small /tmp."""
+        return self.root / ".incoming"
+
+    async def clear_incoming(self) -> None:
+        """Remove leftovers of interrupted imports (only one nexus runs, so all are stale)."""
+        await asyncio.to_thread(shutil.rmtree, self.incoming_dir, ignore_errors=True)
+        await asyncio.to_thread(self.incoming_dir.mkdir, parents=True, exist_ok=True)
+
+    def scratch_path(self, suffix: str) -> Path:
+        return self.incoming_dir / f"{uuid.uuid4().hex}{suffix}"
+
+    async def receive(self, chunks: AsyncIterator[bytes]) -> Path:
+        """Store an uploaded file in the incoming directory and return its path."""
+        path = self.scratch_path(".upload")
+        await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
+        f = await asyncio.to_thread(_open_write, path)
+        try:
+            async for chunk in chunks:
+                await asyncio.to_thread(f.write, chunk)
+        except BaseException:
+            f.close()
+            path.unlink(missing_ok=True)
+            raise
+        f.close()
+        return path
+
+    async def adopt(self, game: str, reason: str, source: Path, *, now: datetime) -> WrittenBackup:
+        """Move a finished archive into place as a backup (hash, fsync, rename)."""
+        filename = f"{now:%Y%m%dT%H%M%SZ}-{reason}.tar.zst"
+        final = self.path(game, filename)
+
+        def adopt() -> WrittenBackup:
+            digest = hashlib.sha256()
+            with source.open("rb") as f:
+                while chunk := f.read(CHUNK):
+                    digest.update(chunk)
+                os.fsync(f.fileno())
+            final.parent.mkdir(parents=True, exist_ok=True)
+            source.rename(final)
+            return WrittenBackup(
+                filename=filename, bytes=final.stat().st_size, sha256=digest.hexdigest()
+            )
+
+        return await asyncio.to_thread(adopt)
 
     async def check_writable(self) -> None:
         def check() -> None:

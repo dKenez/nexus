@@ -110,6 +110,15 @@ class SnapshotOut(BaseModel):
         )
 
 
+class ImportOut(BaseModel):
+    backup: BackupOut
+    files: int
+    bytes: int
+    stripped: str | None
+    excluded: list[str]
+    skipped: list[str]
+
+
 class Accepted(BaseModel):
     accepted: bool = True
     detail: str

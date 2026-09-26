@@ -3,6 +3,7 @@
 import os
 import re
 import tomllib
+from collections.abc import Mapping
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal
@@ -68,6 +69,18 @@ class Snapshots(BaseModel):
         return value.strip("/")
 
 
+class ImportSpec(BaseModel):
+    """How to check and clean an archive imported as a game's data (``nexus games import``)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    # Glob patterns (relative to data_path, `{ENV_KEY}` substituted from the game's env) that
+    # must match something in the archive, so a wrong archive is refused before it's used.
+    required: tuple[str, ...] = ()
+    # Top-level paths dropped from the archive (e.g. the image's own snapshot directory).
+    exclude: tuple[str, ...] = ()
+
+
 class Recipe(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -87,6 +100,7 @@ class Recipe(BaseModel):
     env: dict[str, str] = {}
     secret_env: tuple[str, ...] = ()
     snapshots: Snapshots | None = None
+    import_: ImportSpec = Field(default=ImportSpec(), alias="import")
 
     @field_validator("name")
     @classmethod
@@ -127,10 +141,19 @@ class Recipe(BaseModel):
         """The nexus environment variable a recipe secret is read from."""
         return f"NEXUS_GAME_{self.name.upper().replace('-', '_')}_{key}"
 
-    def resolve_env(self, environ: dict[str, str] | None = None) -> dict[str, str]:
-        """The full environment for the game container, with secrets resolved."""
+    def env_values(self, environ: Mapping[str, str] | None = None) -> dict[str, str]:
+        """The non-secret ``env`` values, with per-deployment overrides applied."""
         source = os.environ if environ is None else environ
-        resolved = dict(self.env)
+        return {key: source.get(self.secret_env_var(key), value) for key, value in self.env.items()}
+
+    def resolve_env(self, environ: dict[str, str] | None = None) -> dict[str, str]:
+        """The full environment for the game container.
+
+        ``env`` values can be overridden per deployment with ``NEXUS_GAME_<GAME>_<KEY>`` (e.g.
+        a different SERVER_NAME in dev); ``secret_env`` values must come from there.
+        """
+        source = os.environ if environ is None else environ
+        resolved = self.env_values(source)
         missing = []
         for key in self.secret_env:
             var = self.secret_env_var(key)
