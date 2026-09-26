@@ -2,6 +2,8 @@
 python = "3.13"
 uv = "0.12.19"
 prek = "0.5.3"
+# GitHub CLI (pull requests, releases).
+gh = "2.96.0"
 # CLI for inspecting the Hetzner *dev* project only — see README "Hetzner dev safety".
 hcloud = "1.69.0"
 
