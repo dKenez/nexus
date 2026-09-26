@@ -69,15 +69,58 @@ class NexusBot(discord.Client):
 
     async def on_ready(self) -> None:
         log.info("discord bot ready as %s", self.user)
+        await self._check_notify_channel()
+
+    async def _notify_channel(self) -> discord.abc.Messageable | None:
+        assert self._notify_channel_id is not None
+        channel = self.get_channel(self._notify_channel_id)
+        if channel is None:
+            channel = await self.fetch_channel(self._notify_channel_id)
+        if not isinstance(channel, discord.abc.Messageable):
+            log.error(
+                "DISCORD_NOTIFY_CHANNEL_ID %s is a %s, which can't hold messages; "
+                "use a text channel's id",
+                self._notify_channel_id,
+                getattr(channel, "type", type(channel).__name__),
+            )
+            return None
+        return channel
+
+    async def _check_notify_channel(self) -> None:
+        """Fail loudly at startup, not silently at the first idle stop."""
+        if self._notify_channel_id is None:
+            log.warning("DISCORD_NOTIFY_CHANNEL_ID not set; idle stops and errors won't be posted")
+            return
+        try:
+            channel = await self._notify_channel()
+        except discord.Forbidden:
+            log.error(
+                "the bot can't see notify channel %s: in Discord, open the channel's "
+                "Permissions and allow the bot View Channel, Send Messages and Embed Links",
+                self._notify_channel_id,
+            )
+            return
+        except discord.NotFound:
+            log.error("notify channel %s doesn't exist (check the id)", self._notify_channel_id)
+            return
+        if channel is None:
+            return
+        me = getattr(channel, "guild", None) and channel.guild.me  # ty: ignore[unresolved-attribute]
+        if me is not None and not channel.permissions_for(me).send_messages:  # ty: ignore[unresolved-attribute]
+            log.error(
+                "the bot can see notify channel #%s but can't send messages there; allow it "
+                "Send Messages and Embed Links",
+                getattr(channel, "name", self._notify_channel_id),
+            )
+            return
+        log.info("notifications go to #%s", getattr(channel, "name", self._notify_channel_id))
 
     async def notify(self, level: Level, message: str) -> None:
         """``Notifier`` implementation: post to the notify channel."""
         if self._notify_channel_id is None or not self.is_ready():
             return
-        channel = self.get_channel(self._notify_channel_id)
-        if channel is None:
-            channel = await self.fetch_channel(self._notify_channel_id)
-        if isinstance(channel, discord.abc.Messageable):
+        channel = await self._notify_channel()
+        if channel is not None:
             await channel.send(f"{LEVEL_ICON[level]} {message}"[:2000])
 
 
