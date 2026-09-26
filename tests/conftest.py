@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from nexus.config import Settings
 from nexus.core.orchestrator import Orchestrator, OrchestratorConfig
 from nexus.core.recipes import Recipe, RecipeBook
 from nexus.db.models import Base
@@ -50,6 +51,20 @@ class World:
     query: FakeQuery
     backups: BackupStore
     sessions: async_sessionmaker[AsyncSession]
+
+
+@pytest.fixture(autouse=True)
+def _isolated_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hide the developer's real configuration from tests.
+
+    mise loads .env into the environment, and Settings reads the environment, so without this
+    a test could pick up the real Discord token (and log the bot in) or real Hetzner settings.
+    NEXUS_TEST_DATABASE_URL is not a setting and is kept.
+    """
+    names = {name.upper() for name in Settings.model_fields}
+    for key in list(os.environ):
+        if key in names or key.startswith("NEXUS_GAME_"):
+            monkeypatch.delenv(key)
 
 
 @pytest.fixture

@@ -57,3 +57,10 @@ def test_blank_values_mean_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     assert s.discord_guild_id is None
     assert s.discord_token is None
     assert s.discord_roles_admin == []
+
+
+def test_tests_do_not_see_the_real_environment() -> None:
+    import os
+
+    assert "DISCORD_TOKEN" not in os.environ
+    assert "HCLOUD_TOKEN" not in os.environ
