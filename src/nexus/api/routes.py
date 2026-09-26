@@ -106,8 +106,21 @@ async def list_snapshots(game: str, orch: Orch) -> list[SnapshotOut]:
 
 
 @router.post("/games/{game}/restore", response_model=BackupOut, tags=["games"])
-async def pin_backup(game: str, orch: Orch, backup_id: Annotated[int, Query()]) -> BackupOut:
-    backup = await orch.pin_backup(game, backup_id)
+async def restore(
+    game: str,
+    orch: Orch,
+    backup_id: Annotated[int | None, Query()] = None,
+    snapshot_id: Annotated[int | None, Query()] = None,
+) -> BackupOut:
+    """Choose what the next start restores: a full backup, or a snapshot (which is turned into
+    a full backup). The game must be stopped."""
+    if (backup_id is None) == (snapshot_id is None):
+        raise InvalidStateError("pass exactly one of backup_id or snapshot_id")
+    if snapshot_id is not None:
+        backup = await orch.restore_snapshot(game, snapshot_id)
+    else:
+        assert backup_id is not None
+        backup = await orch.pin_backup(game, backup_id)
     await orch.audit(ACTOR, "restore", game, "ok", backup.filename)
     return BackupOut.of(backup)
 

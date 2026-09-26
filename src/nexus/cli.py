@@ -78,8 +78,18 @@ def games_snapshots(game: str) -> None:
 
 
 @games.command("restore")
-def games_restore(game: str, backup_id: int) -> None:
-    _call("POST", f"/games/{game}/restore", params={"backup_id": backup_id})
+def games_restore(
+    game: str,
+    backup_id: Annotated[int | None, typer.Argument(help="Full backup to start from")] = None,
+    snapshot: Annotated[
+        int | None, typer.Option("--snapshot", help="Snapshot id to start from instead")
+    ] = None,
+) -> None:
+    """Choose what GAME's next start restores (see `backups` and `snapshots` for ids)."""
+    if (backup_id is None) == (snapshot is None):
+        raise typer.BadParameter("give a BACKUP_ID or --snapshot ID")
+    params = {"backup_id": backup_id} if backup_id is not None else {"snapshot_id": snapshot}
+    _call("POST", f"/games/{game}/restore", params=params)
 
 
 @games.command("import")

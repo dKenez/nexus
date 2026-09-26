@@ -82,7 +82,7 @@ class HostAgent(Protocol):
     async def run_container(self, recipe: Recipe, env: dict[str, str]) -> None: ...
     async def stop_container(self, recipe: Recipe) -> None: ...
     async def remove_container(self, recipe: Recipe) -> None: ...
-    async def archive(self, game: str, sink: Sink) -> None: ...
+    async def archive(self, game: str, sink: Sink, exclude: tuple[str, ...] = ()) -> None: ...
     async def list_files(self, game: str, subdir: str) -> RemoteListing: ...
     async def read_file(self, game: str, path: str, sink: Sink) -> None: ...
 
@@ -114,6 +114,17 @@ def docker_run_command(recipe: Recipe) -> str:
         args += ["--publish", f"{port.port}:{port.port}/{port.protocol}"]
     args.append(recipe.image_ref)
     return shlex.join(args)
+
+
+def archive_command(game: str, exclude: tuple[str, ...] = ()) -> str:
+    """tar of a game's data directory, leaving out the recipe's ``backup_exclude`` paths.
+
+    Patterns are anchored at the data directory and `*` doesn't cross `/`, matching
+    ``nexus.core.importer.excluded`` so a stop backup and an import keep the same files.
+    """
+    args = ["sudo", "tar", "-C", data_dir(game), "--anchored", "--no-wildcards-match-slash"]
+    args += [f"--exclude=./{pattern}" for pattern in exclude]
+    return shlex.join([*args, "-cf", "-", "."])
 
 
 def render_env_file(env: dict[str, str]) -> str:
@@ -200,9 +211,8 @@ class SshHostAgent:
         # Missing containers are fine: the goal is that none exists afterwards.
         await self._run(shlex.join(["docker", "rm", "--force", recipe.container_name]), check=False)
 
-    async def archive(self, game: str, sink: Sink) -> None:
-        source = shlex.quote(data_dir(game))
-        pipeline = f"sudo tar -C {source} -cf - . | zstd -3 -T0 -c"
+    async def archive(self, game: str, sink: Sink, exclude: tuple[str, ...] = ()) -> None:
+        pipeline = f"{archive_command(game, exclude)} | zstd -3 -T0 -c"
         command = f"bash -o pipefail -c {shlex.quote(pipeline)}"
         async with self._conn.create_process(command, encoding=None) as proc:
             while chunk := await proc.stdout.read(CHUNK):

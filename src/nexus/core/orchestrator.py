@@ -12,6 +12,7 @@ anything that creates/deletes the host, changes the firewall or claims host capa
 """
 
 import asyncio
+import fnmatch
 import logging
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
@@ -22,7 +23,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from nexus.core.importer import ImportReport, normalize_archive
+from nexus.core.importer import ImportReport, compose_snapshot, normalize_archive
 from nexus.core.notify import Level, Notifier
 from nexus.core.recipes import Recipe, RecipeBook
 from nexus.db.models import (
@@ -674,8 +675,9 @@ class Orchestrator:
         )
 
     async def _take_backup(self, agent: HostAgent, game: str, reason: str) -> Backup:
+        exclude = self.recipes.get(game).backup_exclude
         written = await self._backups.write(
-            game, reason, lambda sink: agent.archive(game, sink), now=self._now()
+            game, reason, lambda sink: agent.archive(game, sink, exclude), now=self._now()
         )
         async with self._sessions() as s, s.begin():
             backup = Backup(
@@ -743,6 +745,72 @@ class Orchestrator:
             await self._set(game, GameStatus.RUNNING, last_player_seen_at=self._now())
         return backup
 
+    async def restore_snapshot(
+        self, game: str, snapshot_id: int, *, op: Operation | None = None
+    ) -> Backup:
+        """Make a snapshot the world the next start restores.
+
+        Builds a normal full backup from it (the newest full backup, with what the snapshot
+        contains swapped in) and makes that the newest backup, so start needs no special case.
+        """
+        op = op or self.begin(game, "restoring a snapshot")
+        composed = self._backups.scratch_path(".tar.zst")
+        try:
+            recipe = self.recipes.get(game)
+            async with self._lock(game):
+                state = await self._state_of(game)
+                if state.status is not GameStatus.STOPPED:
+                    raise InvalidStateError(
+                        f"stop {recipe.display_name} before restoring a snapshot"
+                    )
+                async with self._sessions() as s:
+                    snapshot = await s.get(Snapshot, snapshot_id)
+                if snapshot is None or snapshot.game != game or snapshot.deleted_at is not None:
+                    raise NexusError(f"no snapshot {snapshot_id} for {recipe.display_name}")
+                source = self._backups.snapshot_path(game, snapshot.filename)
+                if not await asyncio.to_thread(source.is_file):
+                    raise NexusError(f"snapshot file {snapshot.filename} is missing on disk")
+                base = await self._newest_backup(game)
+                await asyncio.to_thread(
+                    compose_snapshot,
+                    self._backups.path(game, base.filename) if base else None,
+                    source,
+                    composed,
+                    recipe.import_,
+                    recipe.env_values(dict(self._environ)),
+                    exclude=recipe.backup_exclude,
+                    scratch=self._backups.incoming_dir,
+                )
+                written = await self._backups.adopt(game, "snapshot", composed, now=self._now())
+                async with self._sessions() as s, s.begin():
+                    backup = Backup(
+                        game=game,
+                        filename=written.filename,
+                        bytes=written.bytes,
+                        sha256=written.sha256,
+                        reason="snapshot",
+                        created_at=self._now(),
+                    )
+                    s.add(backup)
+                    # Newest backup wins at start; drop any older pin.
+                    (await self._get_state(s, game)).pinned_backup_id = None
+                await self._prune(game)
+            log.info("restored %s snapshot %s as %s", game, snapshot.filename, written.filename)
+            return backup
+        finally:
+            op.release()
+            await asyncio.to_thread(composed.unlink, missing_ok=True)
+
+    async def _newest_backup(self, game: str) -> Backup | None:
+        async with self._sessions() as s:
+            result = await s.execute(
+                select(Backup)
+                .where(Backup.game == game, Backup.deleted_at.is_(None))
+                .order_by(Backup.created_at.desc(), Backup.id.desc())
+                .limit(1)
+            )
+            return result.scalar_one_or_none()
+
     async def pin_backup(self, game: str, backup_id: int) -> Backup:
         op = self.begin(game, "changing its restore point")
         try:
@@ -793,6 +861,7 @@ class Orchestrator:
                     normalized,
                     recipe.import_,
                     recipe.env_values(dict(self._environ)),
+                    exclude=recipe.backup_exclude,
                     scratch=self._backups.incoming_dir,
                 )
                 written = await self._backups.adopt(game, "import", normalized, now=self._now())
@@ -946,6 +1015,7 @@ class Orchestrator:
                 for f in listing.files
                 if listing.now - f.mtime >= config.settle_seconds
                 and SNAPSHOT_NAME_RE.match(f.name)
+                and fnmatch.fnmatchcase(f.name, config.pattern)
                 and not f.name.endswith(".partial")
             ]
             if not settled:

@@ -15,7 +15,8 @@ def test_repo_recipes_load() -> None:
     assert valheim.query.port == 2457
     assert valheim.image_ref == "docker.io/lloesche/valheim-server:latest"
     assert valheim.env["WORLD_NAME"] == "VoE"
-    assert valheim.import_.exclude == ("backups",)
+    assert valheim.backup_exclude == ("backups", "worlds_local/*_backup_auto-*")
+    assert valheim.snapshots is not None and valheim.snapshots.pattern == "worlds-*.zip"
     assert valheim.env["SERVER_ARGS"] == "-backups 0"
     assert valheim.data_path == "/config"
     assert valheim.secret_env_var("SERVER_PASS") == "NEXUS_GAME_VALHEIM_SERVER_PASS"

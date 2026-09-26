@@ -161,20 +161,91 @@ def _strip(name: str, prefix: str | None) -> str | None:
     return name.removeprefix(prefix + "/")
 
 
+def excluded(name: str, patterns: tuple[str, ...]) -> str | None:
+    """The ``backup_exclude`` pattern that drops ``name`` (or one of its parents), if any.
+
+    Anchored at the data directory, `*` not crossing `/`: the same rules the stop backup's
+    `tar --anchored --no-wildcards-match-slash --exclude` uses on the VM.
+    """
+    parts = name.split("/")
+    for i in range(1, len(parts) + 1):
+        path = PurePosixPath("/".join(parts[:i]))
+        for pattern in patterns:
+            if path.full_match(pattern):
+                return pattern
+    return None
+
+
+def _required(spec: ImportSpec, env: dict[str, str]) -> list[str]:
+    try:
+        return [pattern.format(**env) for pattern in spec.required]
+    except KeyError as exc:
+        raise ArchiveError(f"import pattern refers to unknown env value {exc}") from None
+
+
+_Kept = list[tuple[str, _Entry, _Reader]]
+
+
+def _write(dest: Path, kept: _Kept) -> int:
+    """Write entries as a ``tar.zst``; returns the uncompressed size of the files."""
+    total = 0
+    with dest.open("wb") as raw:
+        compressor = zstandard.ZstdCompressor(level=3, threads=-1)
+        with (
+            compressor.stream_writer(raw, closefd=False) as zout,
+            tarfile.open(fileobj=zout, mode="w|", format=tarfile.PAX_FORMAT) as out,
+        ):
+            for name, entry, reader in kept:
+                info = tarfile.TarInfo(name)
+                info.mtime = entry.mtime
+                info.mode = entry.mode
+                info.uid, info.gid = entry.uid, entry.gid
+                if entry.is_dir:
+                    info.type = tarfile.DIRTYPE
+                    out.addfile(info)
+                    continue
+                info.size = entry.size
+                with reader.open(entry) as data:
+                    out.addfile(info, data)
+                total += entry.size
+        raw.flush()
+    return total
+
+
+def _filter(
+    entries: list[tuple[str, _Entry, _Reader]], exclude: tuple[str, ...]
+) -> tuple[_Kept, set[str]]:
+    kept: _Kept = []
+    dropped: set[str] = set()
+    for name, entry, reader in entries:
+        pattern = excluded(name, exclude)
+        if pattern is not None:
+            dropped.add(pattern)
+            continue
+        kept.append((name, entry, reader))
+    if not any(not entry.is_dir for _, entry, _ in kept):
+        raise ArchiveError("the archive contains no files after exclusions")
+    return kept, dropped
+
+
+def _check_required(required: list[str], names: list[str], what: str) -> None:
+    missing = _missing(required, names)
+    if missing:
+        tops = ", ".join(sorted({n.split("/")[0] for n in names})[:10])
+        raise ArchiveError(f"{what} is missing {', '.join(missing)} (top level has: {tops})")
+
+
 def normalize_archive(
     source: Path,
     dest: Path,
     spec: ImportSpec,
     env: dict[str, str],
     *,
+    exclude: tuple[str, ...] = (),
     scratch: Path,
 ) -> ImportReport:
     """Validate ``source`` and write it to ``dest`` as a data-directory ``tar.zst``."""
-    try:
-        required = [pattern.format(**env) for pattern in spec.required]
-    except KeyError as exc:
-        raise ArchiveError(f"import pattern refers to unknown env value {exc}") from None
-
+    required = _required(spec, env)
     with ExitStack() as stack:
         reader = _Reader(source, scratch, stack)
         names = [e.name for e in reader.entries]
@@ -184,60 +255,69 @@ def normalize_archive(
         # Archives made from the directory itself (tar -C config .) are used as they are; ones
         # made from its parent (docker cp, tar config/) have one wrapping directory to strip.
         prefix: str | None = None
-        missing = _missing(required, names)
         tops = {n.split("/")[0] for n in names}
-        if missing and len(tops) == 1:
+        if _missing(required, names) and len(tops) == 1:
             candidate = next(iter(tops))
             stripped = [s for n in names if (s := _strip(n, candidate))]
             if not _missing(required, stripped):
-                prefix, missing = candidate, []
-        if missing:
-            found = ", ".join(sorted(tops)[:10])
-            raise ArchiveError(
-                f"the archive doesn't look like this game's data: missing {', '.join(missing)} "
-                f"(top level has: {found})"
-            )
-
-        excluded: set[str] = set()
-        kept: list[tuple[str, _Entry]] = []
-        for entry in reader.entries:
-            name = _strip(entry.name, prefix)
-            if name is None:
-                continue
-            top = name.split("/")[0]
-            if top in spec.exclude:
-                excluded.add(top)
-                continue
-            kept.append((name, entry))
-        if not any(not e.is_dir for _, e in kept):
-            raise ArchiveError("the archive contains no files after exclusions")
-
-        total = 0
-        with dest.open("wb") as raw:
-            compressor = zstandard.ZstdCompressor(level=3, threads=-1)
-            with (
-                compressor.stream_writer(raw, closefd=False) as zout,
-                tarfile.open(fileobj=zout, mode="w|", format=tarfile.PAX_FORMAT) as out,
-            ):
-                for name, entry in kept:
-                    info = tarfile.TarInfo(name)
-                    info.mtime = entry.mtime
-                    info.mode = entry.mode
-                    info.uid, info.gid = entry.uid, entry.gid
-                    if entry.is_dir:
-                        info.type = tarfile.DIRTYPE
-                        out.addfile(info)
-                        continue
-                    info.size = entry.size
-                    with reader.open(entry) as data:
-                        out.addfile(info, data)
-                    total += entry.size
-            raw.flush()
+                prefix = candidate
+        entries = [
+            (name, entry, reader)
+            for entry in reader.entries
+            if (name := _strip(entry.name, prefix)) is not None
+        ]
+        _check_required(required, [n for n, _, _ in entries], "the archive")
+        kept, dropped = _filter(entries, exclude)
+        total = _write(dest, kept)
 
     return ImportReport(
-        files=sum(1 for _, e in kept if not e.is_dir),
+        files=sum(1 for _, e, _ in kept if not e.is_dir),
         bytes=total,
         stripped=prefix,
-        excluded=sorted(excluded),
+        excluded=sorted(dropped),
         skipped=sorted(reader.skipped),
+    )
+
+
+def compose_snapshot(
+    base: Path | None,
+    snapshot: Path,
+    dest: Path,
+    spec: ImportSpec,
+    env: dict[str, str],
+    *,
+    exclude: tuple[str, ...] = (),
+    scratch: Path,
+) -> ImportReport:
+    """A full data-directory backup from a snapshot: ``base`` (the newest full backup) with
+    every top-level path the snapshot contains replaced by the snapshot's version.
+
+    For Valheim the snapshot holds just ``worlds_local/``, so the result is the snapshot's
+    world plus the base's admin/ban/permit lists and settings.
+    """
+    required = _required(spec, env)
+    with ExitStack() as stack:
+        overlay = _Reader(snapshot, scratch, stack)
+        replaced = {e.name.split("/")[0] for e in overlay.entries}
+        if not replaced:
+            raise ArchiveError("the snapshot is empty")
+        entries = []
+        if base is not None:
+            base_reader = _Reader(base, scratch, stack)
+            entries += [
+                (e.name, e, base_reader)
+                for e in base_reader.entries
+                if e.name.split("/")[0] not in replaced
+            ]
+        entries += [(e.name, e, overlay) for e in overlay.entries]
+        _check_required(required, [n for n, _, _ in entries], "the restored data")
+        kept, dropped = _filter(entries, exclude)
+        total = _write(dest, kept)
+
+    return ImportReport(
+        files=sum(1 for _, e, _ in kept if not e.is_dir),
+        bytes=total,
+        stripped=None,
+        excluded=sorted(dropped),
+        skipped=sorted(overlay.skipped),
     )

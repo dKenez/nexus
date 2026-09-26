@@ -39,17 +39,19 @@ Discord ──▶ nexus (k3s pod) ──hcloud API──▶ Hetzner: VM + Primar
 
 ## Backups and snapshots
 
-There are two layers:
+There are two layers, and both only hold what a restore needs:
 
-- **Full backups** (`/backups/<game>/*.tar.zst`) are the whole data directory, taken on every stop and by `/game backup`. They're what a start restores, and the last `BACKUP_RETENTION` are kept.
-- **Snapshots** (`/backups/<game>/snapshots/`) are copies of the files the game image writes by itself while it runs. For Valheim that's the image's hourly, save-aware `worlds_local` zips. nexus copies the newest one to ymir within `check_minutes` of it appearing and keeps the last `keep`. They cover what full backups can't: losing the VM mid-session, or wanting to roll back to an hour ago.
+- **Full backups** (`/backups/<game>/*.tar.zst`) are the game's data directory minus the recipe's `backup_exclude` paths. For Valheim that's the world plus the admin/ban/permit lists and `prefs`. They're taken on every stop and by `/game backup`, and every start restores one: the newest, or the one chosen with `/game restore`. The last `BACKUP_RETENTION` are kept.
+- **Snapshots** (`/backups/<game>/snapshots/`) are the game image's own save-aware snapshots, copied off the VM while the game runs. For Valheim that's the hourly `worlds-*.zip` of `worlds_local/`. nexus copies each new one within `check_minutes` and keeps the last `keep`. They cover what full backups can't: losing the VM mid-session, or rolling back to an hour ago.
+
+**Restoring a snapshot** is `/game restore <game>` (or `nexus games restore <game> --snapshot <id>`) with the game stopped. nexus takes the newest full backup, swaps in the snapshot's world, and saves the result as a new full backup. The next start restores that like any other backup.
 
 ### Importing a world
 
 `nexus games import <game> <archive>` uploads an archive of a game's data directory and makes it the game's newest backup, so the next start restores it. The game must be stopped.
 
 - **Formats:** `.tar`, `.tar.gz`, `.tar.zst` or `.zip`, made from the directory itself or from its parent. A single wrapping directory such as `config/` is removed automatically.
-- **Checks:** the recipe's `[import]` table decides what's required and what's left out. For Valheim, the world named `WORLD_NAME` must be in `worlds_local/`, otherwise the import is refused before anything changes. The image's own `backups/` zips are dropped.
+- **Checks:** the recipe's `[import]` table lists what's required. For Valheim, the world named `WORLD_NAME` must be in `worlds_local/`, otherwise the import is refused before anything changes. `backup_exclude` paths are dropped, the same as in every backup.
 - **Safety:** absolute paths and `..` are refused, and links and device files are skipped.
 
 **Moving the current Valheim server to nexus:**
@@ -66,8 +68,6 @@ There are two layers:
 
 To try it in dev first without stopping prod, skip `docker stop`. A copy taken while the server runs can catch a save halfway. That's fine for a test, but not for the real move.
 
-**Restoring from a snapshot** is still manual. Unpack the latest full backup, replace its `worlds_local/` with the snapshot's contents, and import the result.
-
 ## Discord commands
 
 | Command | Tier |
@@ -79,7 +79,7 @@ To try it in dev first without stopping prod, skip `docker stop`. A copy taken w
 - Tiers map to Discord role IDs (`DISCORD_ROLES_VIEWER`, `DISCORD_ROLES_OPERATOR`, `DISCORD_ROLES_ADMIN`).
 - A higher tier includes the lower ones.
 - If no viewer roles are set, every guild member can view.
-- `/game restore` pins a backup for the *next* start. The game must be stopped.
+- `/game restore` chooses the full backup or snapshot the *next* start uses. The game must be stopped.
 
 ## Recipes
 

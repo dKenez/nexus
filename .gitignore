@@ -15,3 +15,8 @@ wheels/
 
 # Editor settings
 .vscode/
+
+# World archives for `nexus games import` (never commit game data)
+/*.tar
+/*.tar.*
+/*.zip

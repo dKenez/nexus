@@ -59,6 +59,8 @@ class Snapshots(BaseModel):
     keep: int = Field(default=48, ge=1)
     # A file must be unmodified this long before it's pulled, so a half-written one isn't.
     settle_seconds: int = Field(default=120, ge=0)
+    # Only files matching this are pulled (e.g. the image's world zips, not other files).
+    pattern: str = "*"
 
     @field_validator("dir")
     @classmethod
@@ -77,8 +79,6 @@ class ImportSpec(BaseModel):
     # Glob patterns (relative to data_path, `{ENV_KEY}` substituted from the game's env) that
     # must match something in the archive, so a wrong archive is refused before it's used.
     required: tuple[str, ...] = ()
-    # Top-level paths dropped from the archive (e.g. the image's own snapshot directory).
-    exclude: tuple[str, ...] = ()
 
 
 class Recipe(BaseModel):
@@ -101,6 +101,17 @@ class Recipe(BaseModel):
     secret_env: tuple[str, ...] = ()
     snapshots: Snapshots | None = None
     import_: ImportSpec = Field(default=ImportSpec(), alias="import")
+    # Paths inside data_path that are never backed up, restored or imported: anchored globs
+    # where `*` doesn't cross `/` (GNU tar --anchored --no-wildcards-match-slash semantics).
+    backup_exclude: tuple[str, ...] = ()
+
+    @field_validator("backup_exclude")
+    @classmethod
+    def _relative_patterns(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for pattern in value:
+            if pattern.startswith("/") or ".." in pattern.split("/") or not pattern.strip("/"):
+                raise ValueError(f"backup_exclude pattern {pattern!r} must be relative")
+        return tuple(p.strip("/") for p in value)
 
     @field_validator("name")
     @classmethod

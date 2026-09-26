@@ -126,7 +126,7 @@ class FakeAgent:
     async def remove_container(self, recipe: Recipe) -> None:
         self.containers_.pop(recipe.name, None)
 
-    async def archive(self, game: str, sink: Sink) -> None:
+    async def archive(self, game: str, sink: Sink, exclude: tuple[str, ...] = ()) -> None:
         if self.fail_archive:
             raise RuntimeError("disk on fire")
         await sink(self.data[game])

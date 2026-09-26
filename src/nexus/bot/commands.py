@@ -77,20 +77,34 @@ async def game_autocomplete(
     ][:25]
 
 
-async def backup_autocomplete(
+async def restore_point_autocomplete(
     interaction: discord.Interaction, current: str
-) -> list[app_commands.Choice[int]]:
+) -> list[app_commands.Choice[str]]:
+    """Full backups and snapshots, newest first; values are "backup:<id>" / "snapshot:<id>"."""
     game = getattr(interaction.namespace, "game", None)
     if not game or game not in orch(interaction).recipes:
         return []
-    backups = await orch(interaction).backups(game)
-    return [
-        app_commands.Choice(
-            name=f"#{b.id} {b.created_at:%Y-%m-%d %H:%M} UTC · {render.size(b.bytes)} · {b.reason}",
-            value=b.id,
+    o = orch(interaction)
+    points = [
+        (
+            b.created_at,
+            f"Backup {b.created_at:%Y-%m-%d %H:%M} UTC · {b.reason} · {render.size(b.bytes)}",
+            f"backup:{b.id}",
         )
-        for b in backups
-        if current in str(b.id) or current in f"{b.created_at:%Y-%m-%d}"
+        for b in await o.backups(game)
+    ] + [
+        (
+            sn.taken_at,
+            f"Snapshot {sn.taken_at:%Y-%m-%d %H:%M} UTC · {render.size(sn.bytes)}",
+            f"snapshot:{sn.id}",
+        )
+        for sn in await o.snapshots(game)
+    ]
+    points.sort(key=lambda p: p[0], reverse=True)
+    return [
+        app_commands.Choice(name=name, value=value)
+        for _, name, value in points
+        if current.lower() in name.lower()
     ][:25]
 
 
@@ -207,18 +221,28 @@ class GameGroup(app_commands.Group):
         text = render.backups_text(game, await o.backups(game), await o.snapshots(game))
         await interaction.response.send_message(text, ephemeral=True)
 
-    @app_commands.command(description="Use a specific backup the next time a game starts")
+    @app_commands.command(description="Choose the backup or snapshot a game's next start uses")
+    @app_commands.describe(point="A full backup or an hourly snapshot")
     @app_commands.autocomplete(game=game_autocomplete)
-    @app_commands.autocomplete(backup=backup_autocomplete)
+    @app_commands.autocomplete(point=restore_point_autocomplete)
     @require(Tier.ADMIN)
-    async def restore(self, interaction: discord.Interaction, game: str, backup: int) -> None:
+    async def restore(self, interaction: discord.Interaction, game: str, point: str) -> None:
         o = orch(interaction)
-        chosen = await o.pin_backup(game, backup)
+        kind, _, raw_id = point.partition(":")
+        if kind not in ("backup", "snapshot") or not raw_id.isdigit():
+            await interaction.response.send_message(
+                "Pick a backup or snapshot from the list.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(thinking=True)
+        if kind == "snapshot":
+            chosen = await o.restore_snapshot(game, int(raw_id))
+            what = "the chosen snapshot"
+        else:
+            chosen = await o.pin_backup(game, int(raw_id))
+            what = f"backup `#{chosen.id}` ({chosen.created_at:%Y-%m-%d %H:%M} UTC)"
         await o.audit(actor(interaction), "restore", game, "ok", chosen.filename)
-        when = f"{chosen.created_at:%Y-%m-%d %H:%M} UTC"
-        await interaction.response.send_message(
-            f"📌 {game} will start from backup `#{chosen.id}` ({when})."
-        )
+        await interaction.followup.send(f"📌 {game} will start from {what}.")
 
 
 class HostGroup(app_commands.Group):

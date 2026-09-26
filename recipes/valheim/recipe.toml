@@ -28,6 +28,16 @@ stop_grace_seconds = 120
 # Read from NEXUS_GAME_VALHEIM_<KEY> in nexus's environment.
 secret_env = ["SERVER_PASS"]
 
+# Never backed up, restored or imported. What's left is the world plus the admin/ban/permit
+# lists and prefs: exactly what a restore needs.
+backup_exclude = [
+    # The image's hourly world zips; nexus copies these separately as snapshots.
+    "backups",
+    # Valheim's own rotating full copies of the world (turned off below, but an imported
+    # world may still carry old ones).
+    "worlds_local/*_backup_auto-*",
+]
+
 # Any [env] value can also be overridden per deployment with NEXUS_GAME_VALHEIM_<KEY>.
 [env]
 SERVER_NAME = "Vastness of Eternity"
@@ -51,15 +61,16 @@ RESTART_CRON = ""
 # those two layers already cover the same need.
 SERVER_ARGS = "-backups 0"
 
-# `nexus games import valheim <archive>` checks and cleans an imported /config:
+# An imported /config (`nexus games import`), or a restored snapshot, must contain the world
+# named above; anything else is refused before it replaces the current world.
 [import]
-# it must contain the world named above...
 required = ["worlds_local/{WORLD_NAME}*"]
-# ...and the image's own snapshot zips are left out (they can be large and aren't needed).
-exclude = ["backups"]
 
+# Snapshots are the image's hourly zips of worlds_local/ (save-aware). Restoring one swaps
+# its world into the newest full backup: `/game restore`.
 [snapshots]
 dir = "backups"
+pattern = "worlds-*.zip"
 check_minutes = 10
 # About two days of play at one snapshot per hour.
 keep = 48
