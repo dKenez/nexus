@@ -16,6 +16,7 @@ def test_repo_recipes_load() -> None:
     assert valheim.image_ref == "docker.io/lloesche/valheim-server:latest"
     assert valheim.env["WORLD_NAME"] == "VoE"
     assert valheim.import_.exclude == ("backups",)
+    assert valheim.env["SERVER_ARGS"] == "-backups 0"
     assert valheim.data_path == "/config"
     assert valheim.secret_env_var("SERVER_PASS") == "NEXUS_GAME_VALHEIM_SERVER_PASS"
     # Empty values are meaningful here (they disable the image's own cron jobs).

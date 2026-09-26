@@ -46,6 +46,10 @@ BACKUPS_IF_IDLE = "false"
 # nexus owns the lifecycle: every start is a fresh VM with a fresh server download.
 UPDATE_CRON = ""
 RESTART_CRON = ""
+# Valheim's own rotating world copies (worlds_local/<world>_backup_auto-*) are off: each is a
+# full copy of the world, they'd ride along in every nexus backup and hourly snapshot, and
+# those two layers already cover the same need.
+SERVER_ARGS = "-backups 0"
 
 # `nexus games import valheim <archive>` checks and cleans an imported /config:
 [import]
