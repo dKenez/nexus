@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from nexus.core.importer import ImportReport, compose_snapshot, normalize_archive
 from nexus.core.notify import Level, Notifier
-from nexus.core.recipes import Recipe, RecipeBook
+from nexus.core.recipes import QueryType, Recipe, RecipeBook
 from nexus.db.models import (
     AuditLog,
     Backup,
@@ -40,6 +40,7 @@ from nexus.infra.agent import AgentFactory, HostAgent
 from nexus.infra.backups import SNAPSHOT_NAME_RE, BackupStore
 from nexus.infra.hetzner import HetznerGateway
 from nexus.query.base import PlayerQuery, query_players
+from nexus.query.log import players_from_log
 
 log = logging.getLogger(__name__)
 
@@ -593,12 +594,26 @@ class Orchestrator:
             )
             return result.scalar_one_or_none()
 
+    async def _players(self, recipe: Recipe, ip: str) -> int | None:
+        """Players on a game, or ``None`` if it isn't ready or can't be asked."""
+        if recipe.query.type is QueryType.LOG:
+            q = recipe.query
+            assert q.ready and q.join and q.leave
+            try:
+                async with self._agents.connect(ip) as agent:
+                    lines = await agent.log_lines(recipe, [q.ready, q.join, q.leave])
+            except Exception as exc:
+                log.warning("reading %s's log failed: %s", recipe.name, exc)
+                return None
+            return players_from_log(lines, q)
+        return await self._query(recipe, ip)
+
     async def _wait_answering(self, recipe: Recipe, ip: str) -> bool:
-        if recipe.query.port is None:
+        if recipe.query.type is QueryType.NONE:
             return True
         deadline = self._now() + timedelta(seconds=recipe.startup_timeout)
         while self._now() < deadline:
-            if await self._query(recipe, ip) is not None:
+            if await self._players(recipe, ip) is not None:
                 return True
             await asyncio.sleep(self._poll_interval)
         return False
@@ -930,9 +945,9 @@ class Orchestrator:
             if state.game not in self.recipes:
                 continue
             recipe = self.recipes.get(state.game)
-            if recipe.query.port is None:
+            if recipe.query.type is QueryType.NONE:
                 continue
-            count = await self._query(recipe, ip)
+            count = await self._players(recipe, ip)
             now = self._now()
             seen = state.last_player_seen_at or state.started_at or now
             if count:
@@ -1212,6 +1227,14 @@ class Orchestrator:
                     now = self._now()
                     await self._set(
                         state.game, GameStatus.RUNNING, started_at=now, last_player_seen_at=now
+                    )
+                    # Whoever started it was watching a progress message from the previous
+                    # nexus process, which will never finish; announce it here instead.
+                    recipe = self.recipes.get(state.game)
+                    port = recipe.ports[0].port
+                    await self.notifier.notify(
+                        Level.INFO,
+                        f"{recipe.display_name} is up at `{await self.address()}:{port}`.",
                     )
                 continue
             log.info("recovering %s from %s", state.game, state.status)

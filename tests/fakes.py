@@ -95,6 +95,8 @@ class FakeAgent:
     files: dict[str, dict[str, tuple[bytes, float]]] = field(default_factory=dict)
     remote_now: float = 0.0
     fail_read: bool = False
+    # Container log lines per game (for query.type = "log").
+    logs: dict[str, list[str]] = field(default_factory=dict)
 
     async def containers(self) -> dict[str, ContainerInfo]:
         return dict(self.containers_)
@@ -139,6 +141,9 @@ class FakeAgent:
             if path.startswith(prefix) and "/" not in path.removeprefix(prefix)
         ]
         return RemoteListing(now=self.remote_now, files=files)
+
+    async def log_lines(self, recipe: Recipe, markers: list[str]) -> list[str]:
+        return [line for line in self.logs.get(recipe.name, []) if any(m in line for m in markers)]
 
     async def read_file(self, game: str, path: str, sink: Sink) -> None:
         if self.fail_read:

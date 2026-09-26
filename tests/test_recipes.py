@@ -12,9 +12,9 @@ REPO_RECIPES = Path(__file__).parent.parent / "recipes"
 def test_repo_recipes_load() -> None:
     book = RecipeBook.load(REPO_RECIPES)
     valheim = book.get("valheim")
-    assert valheim.query.port == 2457
     assert valheim.image_ref == "docker.io/lloesche/valheim-server:latest"
     assert valheim.env["WORLD_NAME"] == "VoE"
+    assert valheim.query.type == "log"
     assert valheim.backup_exclude == ("backups", "worlds_local/*_backup_auto-*")
     assert valheim.snapshots is not None and valheim.snapshots.pattern == "worlds-*.zip"
     assert valheim.env["SERVER_ARGS"] == "-backups 0"
@@ -75,3 +75,8 @@ def test_env_values_can_be_overridden_per_deployment() -> None:
         {"NEXUS_GAME_XY_SERVER_PASSWORD": "pw", "NEXUS_GAME_XY_SERVER_NAME": "Prod (dev)"}
     )
     assert env == {"SERVER_NAME": "Prod (dev)", "TZ": "UTC", "SERVER_PASSWORD": "pw"}
+
+
+def test_log_query_needs_markers() -> None:
+    with pytest.raises(ValidationError, match="ready, join and leave"):
+        recipe("xy", query={"type": "log", "ready": "up"})

@@ -15,8 +15,10 @@ ports = [
     { port = 2456, protocol = "udp" },
     { port = 2457, protocol = "udp" },
 ]
-# Valheim answers Steam A2S queries on game port + 1.
-query = { type = "a2s", port = 2457 }
+# Readiness and players come from the server log. A2S (the Steam query on 2457) only works
+# for public servers, and this one is private like prod. The id after join/leave is the
+# player's SteamID.
+query = { type = "log", ready = "Game server connected", join = "Got handshake from client", leave = "Closing socket" }
 
 idle_minutes = 10
 # First boot downloads the server (~1 GB) before it answers queries.

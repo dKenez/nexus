@@ -84,6 +84,7 @@ class HostAgent(Protocol):
     async def remove_container(self, recipe: Recipe) -> None: ...
     async def archive(self, game: str, sink: Sink, exclude: tuple[str, ...] = ()) -> None: ...
     async def list_files(self, game: str, subdir: str) -> RemoteListing: ...
+    async def log_lines(self, recipe: Recipe, markers: list[str]) -> list[str]: ...
     async def read_file(self, game: str, path: str, sink: Sink) -> None: ...
 
 
@@ -228,6 +229,14 @@ class SshHostAgent:
             f"-printf '%f\\t%s\\t%T@\\n' 2>/dev/null || true"
         )
         return parse_listing(out)
+
+    async def log_lines(self, recipe: Recipe, markers: list[str]) -> list[str]:
+        """Lines of the game container's log containing any of ``markers`` (fixed strings)."""
+        args = ["docker", "logs", recipe.container_name]
+        patterns = " ".join(f"-e {shlex.quote(m)}" for m in markers)
+        # grep exits 1 when nothing matches yet; that's an empty result, not an error.
+        out = await self._run(f"{shlex.join(args)} 2>&1 | grep -aF {patterns} || true", check=True)
+        return out.splitlines()
 
     async def read_file(self, game: str, path: str, sink: Sink) -> None:
         target = shlex.quote(f"{data_dir(game)}/{path}")

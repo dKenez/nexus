@@ -14,7 +14,10 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,30}$")
 
 
 class QueryType(StrEnum):
+    # Steam server query on a UDP port (public servers).
     A2S = "a2s"
+    # Read the game container's log over SSH: works for private servers too.
+    LOG = "log"
     NONE = "none"
 
 
@@ -29,15 +32,29 @@ class Port(BaseModel):
 
 
 class Query(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    """How nexus tells that a game is ready and how many players are on it."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     type: QueryType = QueryType.NONE
+    # a2s: the query port.
     port: int | None = Field(default=None, ge=1, le=65535)
+    # log: literal markers in the container log. `ready` means the server accepts players (and
+    # starts a fresh count, e.g. after a crash-restart); `join`/`leave` are each followed by the
+    # player's id, the first token after the marker.
+    ready: str | None = None
+    join: str | None = None
+    leave: str | None = None
 
     @model_validator(mode="after")
-    def _port_required(self) -> "Query":
-        if self.type is not QueryType.NONE and self.port is None:
-            raise ValueError(f"query type {self.type} needs a port")
+    def _fields_for_type(self) -> "Query":
+        if self.type is QueryType.A2S and self.port is None:
+            raise ValueError("query type a2s needs a port")
+        if self.type is QueryType.LOG and not (self.ready and self.join and self.leave):
+            raise ValueError("query type log needs ready, join and leave markers")
+        for marker in (self.ready, self.join, self.leave):
+            if marker is not None and ("\n" in marker or "'" in marker or not marker.strip()):
+                raise ValueError(f"invalid log marker {marker!r}")
         return self
 
 

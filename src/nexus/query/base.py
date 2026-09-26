@@ -13,9 +13,10 @@ class PlayerQuery(Protocol):
 
 
 async def query_players(recipe: Recipe, host: str, timeout: float = 3.0) -> int | None:
+    """Network queries run from nexus. (``log`` queries go through the host agent instead.)"""
     match recipe.query.type:
         case QueryType.A2S:
             assert recipe.query.port is not None
             return await a2s.player_count(host, recipe.query.port, timeout)
-        case QueryType.NONE:
+        case QueryType.LOG | QueryType.NONE:
             return None
