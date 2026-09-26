@@ -58,6 +58,12 @@ class NexusBot(discord.Client):
         self.tree.add_command(GameGroup())
         self.tree.add_command(HostGroup())
 
+    def announces_in(self, channel_id: int | None) -> bool:
+        """Whether orchestrator announcements should also go out for a command run in
+        ``channel_id``: not when it's the notify channel, where the command's own progress
+        message already says the same thing."""
+        return self._notify_channel_id is not None and channel_id != self._notify_channel_id
+
     async def setup_hook(self) -> None:
         if self._guild_id is not None:
             guild = discord.Object(id=self._guild_id)

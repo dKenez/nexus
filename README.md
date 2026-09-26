@@ -68,6 +68,17 @@ There are two layers, and both only hold what a restore needs:
 
 To try it in dev first without stopping prod, skip `docker stop`. A copy taken while the server runs can catch a save halfway. That's fine for a test, but not for the real move.
 
+## Notifications
+
+The notify channel (`DISCORD_NOTIFY_CHANNEL_ID`) gets every lifecycle event, whoever triggered it (Discord, CLI, API or the idle check):
+- **Start:** "Valheim is up at `…:2456`".
+- **Stop:** "Valheim stopped and backed up", or "Valheim was empty for N minutes; stopped and backed up" for an idle stop.
+- **Empty VM kept:** "The VM stays up until HH:MM UTC (already paid for)".
+- **VM deleted:** "VM … deleted: up 1h 55m, 2 hours billed, about €0.14".
+- **Failures,** alongside the above.
+
+A command run *in* the notify channel isn't announced twice, because its own progress message already says the same thing. The bot checks at startup that it can post there, and logs how to fix the channel permissions if it can't.
+
 ## Discord commands
 
 | Command | Tier |

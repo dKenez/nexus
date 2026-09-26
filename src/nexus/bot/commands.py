@@ -22,6 +22,11 @@ def orch(interaction: discord.Interaction) -> Orchestrator:
     return client.orchestrator
 
 
+def announce(interaction: discord.Interaction) -> bool:
+    client: NexusBot = interaction.client  # ty: ignore[invalid-assignment]
+    return client.announces_in(interaction.channel_id)
+
+
 def actor(interaction: discord.Interaction) -> str:
     return f"discord:{interaction.user.id}"
 
@@ -148,7 +153,7 @@ class GameGroup(app_commands.Group):
             op.release()
             raise
         try:
-            view = await o.start(game, progress, op=op)
+            view = await o.start(game, progress, op=op, announce=announce(interaction))
         except Exception as exc:
             await o.audit(actor(interaction), "start", game, "error", str(exc))
             await progress.finish(f"🔴 {exc}")
@@ -181,7 +186,7 @@ class GameGroup(app_commands.Group):
             op.release()
             raise
         try:
-            await o.stop(game, "manual", progress, op=op)
+            await o.stop(game, "manual", progress, op=op, announce=announce(interaction))
         except Exception as exc:
             await o.audit(actor(interaction), "stop", game, "error", str(exc))
             await progress.finish(f"🔴 {exc}")
@@ -280,7 +285,7 @@ class HostGroup(app_commands.Group):
             op.release()
             raise
         try:
-            await o.shutdown_host(progress, op=op)
+            await o.shutdown_host(progress, op=op, announce=announce(interaction))
         except Exception as exc:
             await o.audit(actor(interaction), "host-shutdown", None, "error", str(exc))
             await progress.finish(f"🔴 {exc}")

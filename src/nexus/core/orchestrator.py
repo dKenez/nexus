@@ -422,12 +422,35 @@ class Orchestrator:
                 f"host {host.name} is in state {host.status} but holds unsaved data for "
                 f"{', '.join(dirty)}; an admin must resolve it"
             )
+        deleted = False
         if host.hcloud_id is not None and await self._hetzner.get_server(host.hcloud_id):
             await self._hetzner.delete_server(host.hcloud_id)
+            deleted = True
         async with self._sessions() as s, s.begin():
             row = await s.get_one(Host, host.id)
             row.status = HostStatus.DELETED
             row.deleted_at = self._now()
+        if deleted:
+            await self._announce_deleted(host, "after a failed start")
+
+    async def _announce_deleted(self, host: Host, why: str = "") -> None:
+        """Tell the channel a VM is gone, with what it cost (Hetzner bills per started hour)."""
+        lifetime = self._now() - host.created_at
+        hours = max(1, math.ceil(lifetime / BILLING_HOUR))
+        minutes = int(lifetime.total_seconds() // 60)
+        up = f"{minutes // 60}h {minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m"
+        cost = ""
+        try:
+            price = await self._hetzner.hourly_price()
+            if price:
+                cost = f", about €{float(price) * hours:.2f}"
+        except Exception:
+            log.warning("looking up the hourly price failed", exc_info=True)
+        billed = f"{hours} hour{'s' if hours != 1 else ''} billed{cost}"
+        suffix = f" {why}" if why else ""
+        await self.notifier.notify(
+            Level.INFO, f"VM {host.name} deleted{suffix}: up {up}, {billed}."
+        )
 
     async def _mark_host_gone(self, host_id: int, reason: str) -> None:
         lost: list[str] = []
@@ -478,6 +501,7 @@ class Orchestrator:
                 st.dirty = False
                 st.last_error = "host destroyed by an admin"
         log.info("host %s deleted", host.name)
+        await self._announce_deleted(host)
         if dirty:
             await self.notifier.notify(
                 Level.WARNING, f"Host force-deleted with unsaved data for: {', '.join(dirty)}"
@@ -518,15 +542,22 @@ class Orchestrator:
         return op.verb if op else None
 
     async def start(
-        self, game: str, progress: Progress = _no_progress, *, op: Operation | None = None
+        self,
+        game: str,
+        progress: Progress = _no_progress,
+        *,
+        op: Operation | None = None,
+        announce: bool = True,
     ) -> GameView:
+        """Start a game. ``announce`` posts "is up" to the notify channel (the bot turns it off
+        when the command was run in that channel, where its own progress message says so)."""
         op = op or self.begin(game, "starting")
         try:
-            return await self._start(game, progress)
+            return await self._start(game, progress, announce)
         finally:
             op.release()
 
-    async def _start(self, game: str, progress: Progress) -> GameView:
+    async def _start(self, game: str, progress: Progress, announce: bool) -> GameView:
         recipe = self._recipe(game)
         env = recipe.resolve_env(dict(self._environ))
         async with self._lock(game):
@@ -584,6 +615,11 @@ class Orchestrator:
                 await self.notifier.notify(
                     Level.WARNING,
                     f"{recipe.display_name} started but isn't answering queries yet.",
+                )
+            elif announce:
+                port = recipe.ports[0].port
+                await self.notifier.notify(
+                    Level.INFO, f"{recipe.display_name} is up at `{await self.address()}:{port}`."
                 )
         return await self.game(game)
 
@@ -651,15 +687,30 @@ class Orchestrator:
         progress: Progress = _no_progress,
         *,
         op: Operation | None = None,
+        announce: bool = True,
+        announcement: str | None = None,
     ) -> GameView:
+        """Stop (and back up) a game. ``announce`` posts it to the notify channel;
+        ``announcement`` replaces the default text (e.g. the idle stop's reason)."""
         op = op or self.begin(game, "stopping")
         try:
             recipe = self.recipes.get(game)
             async with self._lock(game):
                 await self._stop_locked(recipe, reason, progress)
+            if announce:
+                text = announcement or f"{recipe.display_name} stopped and backed up."
+                await self.notifier.notify(Level.INFO, text)
             async with self._host_lock:
                 await self._sync_firewall_quietly()
-                await self._release_if_empty()
+                deleted = await self._release_if_empty()
+                host = None if deleted else await self.host()
+            # (A host shutdown deletes the VM right after; don't promise it stays up.)
+            if announce and reason != "shutdown" and host is not None and host.delete_at:
+                await self.notifier.notify(
+                    Level.INFO,
+                    f"The VM stays up until {host.delete_at:%H:%M} UTC (already paid for); "
+                    "starting a game before then reuses it.",
+                )
             return await self.game(game)
         finally:
             op.release()
@@ -928,7 +979,11 @@ class Orchestrator:
             await asyncio.to_thread(normalized.unlink, missing_ok=True)
 
     async def shutdown_host(
-        self, progress: Progress = _no_progress, *, op: Operation | None = None
+        self,
+        progress: Progress = _no_progress,
+        *,
+        op: Operation | None = None,
+        announce: bool = True,
     ) -> None:
         """Stop (and back up) every game, then delete the host."""
         op = op or self.begin_host("shutting down")
@@ -939,7 +994,7 @@ class Orchestrator:
                 if game in self.recipes:
                     await progress(f"stopping {game}")
                     game_op = self.begin(game, "stopping", during_host_op=True)
-                    await self.stop(game, "shutdown", progress, op=game_op)
+                    await self.stop(game, "shutdown", progress, op=game_op, announce=announce)
             async with self._host_lock:
                 await self._teardown_if_empty()
         finally:
@@ -986,14 +1041,17 @@ class Orchestrator:
             minutes = int((now - seen).total_seconds() // 60)
             log.info("%s idle for %d minutes; stopping", state.game, minutes)
             try:
-                await self.stop(state.game, "idle")
+                await self.stop(
+                    state.game,
+                    "idle",
+                    announcement=(
+                        f"{recipe.display_name} was empty for {minutes} minutes; "
+                        "stopped and backed up."
+                    ),
+                )
             except (NexusError, InvalidStateError) as exc:
                 log.warning("idle stop of %s failed: %s", state.game, exc)
                 continue
-            await self.notifier.notify(
-                Level.INFO,
-                f"{recipe.display_name} was empty for {minutes} minutes; stopped and backed up.",
-            )
             stopped.append(state.game)
         return stopped
 
