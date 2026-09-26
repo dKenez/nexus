@@ -62,7 +62,8 @@ spec:
             # The Cloudflare name that points at the Primary IP (CHANGE ME).
             - name: PUBLIC_HOSTNAME
               value: play.example.com
-            - name: TZ
+            # Times in Discord and notifications.
+            - name: TIMEZONE
               value: Europe/Copenhagen
           volumeMounts:
             - name: backups

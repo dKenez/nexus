@@ -64,3 +64,14 @@ def test_tests_do_not_see_the_real_environment() -> None:
 
     assert "DISCORD_TOKEN" not in os.environ
     assert "HCLOUD_TOKEN" not in os.environ
+
+
+def test_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
+    from zoneinfo import ZoneInfo
+
+    assert settings(monkeypatch).timezone == ZoneInfo("UTC")
+    assert settings(monkeypatch, TIMEZONE="Europe/Copenhagen").timezone == ZoneInfo(
+        "Europe/Copenhagen"
+    )
+    with pytest.raises(ValidationError, match="unknown timezone"):
+        settings(monkeypatch, TIMEZONE="Mars/Olympus")

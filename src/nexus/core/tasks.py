@@ -5,7 +5,7 @@ import logging
 from collections.abc import Coroutine
 from typing import Any
 
-from nexus.core.notify import Level, Notifier
+from nexus.core.notify import Event, Level, Notifier
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +27,9 @@ class TaskRunner:
             raise
         except Exception as exc:
             log.exception("background task %s failed", name)
-            await self._notifier.notify(Level.ERROR, f"{name} failed: {exc}")
+            await self._notifier.notify(
+                Event(Level.ERROR, "nexus", f"{name} failed", icon="🔴", details=(str(exc),))
+            )
 
     async def shutdown(self) -> None:
         for task in list(self._tasks):

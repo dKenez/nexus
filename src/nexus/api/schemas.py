@@ -18,6 +18,9 @@ class GameOut(BaseModel):
     dirty: bool
     last_error: str | None
     pinned_backup_id: int | None
+    # The last start: seconds from request to ready, and whether it had to create a VM.
+    start_seconds: int | None
+    start_new_vm: bool | None
     ports: list[str]
 
     @classmethod
@@ -34,6 +37,8 @@ class GameOut(BaseModel):
             dirty=view.dirty,
             last_error=view.last_error,
             pinned_backup_id=view.pinned_backup_id,
+            start_seconds=view.start_seconds,
+            start_new_vm=view.start_new_vm,
             ports=[str(p) for p in view.recipe.ports],
         )
 

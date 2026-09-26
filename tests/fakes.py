@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-from nexus.core.notify import Level
+from nexus.core.notify import Event, Level
 from nexus.core.recipes import Port, Recipe
 from nexus.infra.agent import ContainerInfo, RemoteFile, RemoteListing, Sink
 from nexus.infra.hetzner import PrimaryIPInfo, ServerInfo
@@ -173,10 +173,14 @@ class FakeAgentFactory:
 
 @dataclass
 class RecordingNotifier:
-    messages: list[tuple[Level, str]] = field(default_factory=list)
+    events: list[Event] = field(default_factory=list)
 
-    async def notify(self, level: Level, message: str) -> None:
-        self.messages.append((level, message))
+    async def notify(self, event: Event) -> None:
+        self.events.append(event)
+
+    @property
+    def messages(self) -> list[tuple[Level, str]]:
+        return [(e.level, e.text()) for e in self.events]
 
 
 class FakeQuery:

@@ -100,6 +100,9 @@ class GameState(Base):
     dirty: Mapped[bool] = mapped_column(default=False)
     pinned_backup_id: Mapped[int | None] = mapped_column(ForeignKey("backups.id"))
     last_snapshot_check_at: Mapped[datetime | None]
+    # The last start: seconds from request to ready, and whether it had to create a VM.
+    start_seconds: Mapped[int | None]
+    start_new_vm: Mapped[bool | None]
     last_error: Mapped[str | None] = mapped_column(Text)
 
 

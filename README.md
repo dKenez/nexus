@@ -70,14 +70,19 @@ To try it in dev first without stopping prod, skip `docker stop`. A copy taken w
 
 ## Notifications
 
-The notify channel (`DISCORD_NOTIFY_CHANNEL_ID`) gets every lifecycle event, whoever triggered it (Discord, CLI, API or the idle check):
-- **Start:** "Valheim is up at `…:2456`".
-- **Stop:** "Valheim stopped and backed up", or "Valheim was empty for N minutes; stopped and backed up" for an idle stop.
-- **Empty VM kept:** "The VM stays up until HH:MM UTC (already paid for)".
-- **VM deleted:** "VM … deleted: up 1h 55m, 2 hours billed, about €0.14".
-- **Failures,** alongside the above.
+The notify channel (`DISCORD_NOTIFY_CHANNEL_ID`) gets every lifecycle event, whoever triggered it (Discord, CLI, API or the idle check). They use the same style as `/games`: an embed titled with the game (or "Host"), then an icon, a bold status and details.
 
-A command run *in* the notify channel isn't announced twice, because its own progress message already says the same thing. The bot checks at startup that it can post there, and logs how to fix the channel permissions if it can't.
+| Event | Example |
+|---|---|
+| Start | 🟢 **up** · `2.28.133.144:2456` · started in 2m 13s (new VM) |
+| Stop | ⚫ **stopped and backed up** · empty for 10 minutes, with a footer "The VM stays up until 05:15 CEST; …" when the VM is kept |
+| VM deleted | ⚫ **VM deleted** · up 56m · 1 hour billed · about €0.07 |
+| Failures | 🔴 **stop failed** · … |
+
+- **Start time** runs from the request to the server answering, so it includes creating a VM when one was needed. It's also in `GET /api/games` as `start_seconds` and `start_new_vm`.
+- **Times** are shown in `TIMEZONE`, e.g. `Europe/Copenhagen`. The default is UTC.
+- **No duplicates:** a command run *in* the notify channel isn't announced twice, because its own progress message already says the same thing.
+- **Startup check:** the bot checks at startup that it can post in the notify channel, and logs how to fix the channel permissions if it can't.
 
 ## Discord commands
 

@@ -71,6 +71,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             backup_retention=settings.backup_retention,
             host_billing_margin=settings.host_billing_margin,
             public_hostname=settings.public_hostname,
+            timezone=settings.timezone,
         ),
         recipes=recipes,
         sessions=sessions,

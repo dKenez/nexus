@@ -20,13 +20,15 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from nexus.core.importer import ImportReport, compose_snapshot, normalize_archive
-from nexus.core.notify import Level, Notifier
+from nexus.core.notify import Event, Level, Notifier, Tone
 from nexus.core.recipes import QueryType, Recipe, RecipeBook
+from nexus.core.timefmt import clock, duration
 from nexus.db.models import (
     AuditLog,
     Backup,
@@ -44,6 +46,8 @@ from nexus.query.base import PlayerQuery, query_players
 from nexus.query.log import players_from_log
 
 log = logging.getLogger(__name__)
+
+UTC_ZONE = ZoneInfo("UTC")
 
 Progress = Callable[[str], Awaitable[None]]
 
@@ -76,10 +80,12 @@ class Operation:
     queueing it behind the first one.
     """
 
-    def __init__(self, ops: dict[str, "Operation"], game: str, verb: str) -> None:
+    def __init__(self, ops: dict[str, "Operation"], game: str, verb: str, began: datetime) -> None:
         self._ops = ops
         self.game = game
         self.verb = verb
+        # When the request arrived: a start's duration is measured from here.
+        self.began = began
 
     def release(self) -> None:
         if self._ops.get(self.game) is self:
@@ -104,6 +110,8 @@ class OrchestratorConfig:
     host_billing_margin: int
     provision_timeout: int = 600
     public_hostname: str | None = None
+    # Times shown to people (announcements, Discord) are in this zone.
+    timezone: ZoneInfo = UTC_ZONE
 
 
 @dataclass(frozen=True)
@@ -117,6 +125,8 @@ class GameView:
     dirty: bool
     last_error: str | None
     pinned_backup_id: int | None
+    start_seconds: int | None = None
+    start_new_vm: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -262,6 +272,8 @@ class Orchestrator:
                     dirty=st.dirty if st else False,
                     last_error=st.last_error if st else None,
                     pinned_backup_id=st.pinned_backup_id if st else None,
+                    start_seconds=st.start_seconds if st else None,
+                    start_new_vm=st.start_new_vm if st else None,
                 )
             )
         return views
@@ -353,7 +365,7 @@ class Orchestrator:
         ]
         await self._hetzner.set_firewall(ports)
 
-    async def _ensure_host(self, progress: Progress) -> Host:
+    async def _ensure_host(self, progress: Progress) -> tuple[Host, bool]:
         """Return a READY host, provisioning one if needed. Caller holds the host lock."""
         async with self._sessions() as s:
             host = await self._active_host(s)
@@ -365,7 +377,7 @@ class Orchestrator:
                     async with self._sessions() as s, s.begin():
                         (await s.get_one(Host, host.id)).empty_since = None
                     log.info("reusing host %s (already paid for)", host.name)
-                return host
+                return host, False
             await self._mark_host_gone(host.id, "server disappeared from Hetzner")
             host = None
 
@@ -411,7 +423,7 @@ class Orchestrator:
             row.ready_at = self._now()
             row.empty_since = None
         log.info("host %s ready", host.name)
-        return row
+        return row, True
 
     async def _discard_host(self, host: Host) -> None:
         """Delete a host that never became (or is no longer) usable. Refuses if data is dirty."""
@@ -446,10 +458,12 @@ class Orchestrator:
                 cost = f", about €{float(price) * hours:.2f}"
         except Exception:
             log.warning("looking up the hourly price failed", exc_info=True)
-        billed = f"{hours} hour{'s' if hours != 1 else ''} billed{cost}"
-        suffix = f" {why}" if why else ""
+        details = [f"up {up}", f"{hours} hour{'s' if hours != 1 else ''} billed"]
+        if cost:
+            details.append(cost.removeprefix(", "))
+        summary = f"VM deleted {why}" if why else "VM deleted"
         await self.notifier.notify(
-            Level.INFO, f"VM {host.name} deleted{suffix}: up {up}, {billed}."
+            Event(Level.INFO, "Host", summary, icon="⚫", details=tuple(details), footer=host.name)
         )
 
     async def _mark_host_gone(self, host_id: int, reason: str) -> None:
@@ -468,12 +482,17 @@ class Orchestrator:
                 st.last_error = reason
         if lost:
             await self.notifier.notify(
-                Level.ERROR,
-                f"Host vanished ({reason}). Progress since the last backup is lost for: "
-                f"{', '.join(lost)}",
+                Event(
+                    Level.ERROR,
+                    "Host",
+                    "VM vanished",
+                    icon="🔴",
+                    details=(reason,),
+                    footer=f"Progress since the last backup is lost for: {', '.join(lost)}",
+                )
             )
 
-    async def _teardown_if_empty(self, *, force: bool = False) -> bool:
+    async def _teardown_if_empty(self, *, force: bool = False, announce: bool = True) -> bool:
         """Delete the host if nothing occupies it. Caller holds the host lock."""
         async with self._sessions() as s:
             host = await self._active_host(s)
@@ -501,10 +520,17 @@ class Orchestrator:
                 st.dirty = False
                 st.last_error = "host destroyed by an admin"
         log.info("host %s deleted", host.name)
-        await self._announce_deleted(host)
+        if announce:
+            await self._announce_deleted(host)
         if dirty:
             await self.notifier.notify(
-                Level.WARNING, f"Host force-deleted with unsaved data for: {', '.join(dirty)}"
+                Event(
+                    Level.WARNING,
+                    "Host",
+                    "VM force-deleted",
+                    icon="⚠️",
+                    details=(f"unsaved data lost for {', '.join(dirty)}",),
+                )
             )
         return True
 
@@ -523,7 +549,7 @@ class Orchestrator:
         current = self._ops.get(game)
         if current is not None:
             raise BusyError(f"{recipe.display_name} is already {current.verb}")
-        op = Operation(self._ops, game, verb)
+        op = Operation(self._ops, game, verb, self._now())
         self._ops[game] = op
         return op
 
@@ -532,7 +558,7 @@ class Orchestrator:
         current = self._ops.get(HOST_OP)
         if current is not None:
             raise BusyError(f"the host is already {current.verb}")
-        op = Operation(self._ops, HOST_OP, verb)
+        op = Operation(self._ops, HOST_OP, verb, self._now())
         self._ops[HOST_OP] = op
         return op
 
@@ -553,11 +579,13 @@ class Orchestrator:
         when the command was run in that channel, where its own progress message says so)."""
         op = op or self.begin(game, "starting")
         try:
-            return await self._start(game, progress, announce)
+            return await self._start(game, progress, announce, op.began)
         finally:
             op.release()
 
-    async def _start(self, game: str, progress: Progress, announce: bool) -> GameView:
+    async def _start(
+        self, game: str, progress: Progress, announce: bool, began: datetime
+    ) -> GameView:
         recipe = self._recipe(game)
         env = recipe.resolve_env(dict(self._environ))
         async with self._lock(game):
@@ -572,7 +600,7 @@ class Orchestrator:
             async with self._host_lock:
                 await self._claim(recipe)
                 try:
-                    host = await self._ensure_host(progress)
+                    host, new_vm = await self._ensure_host(progress)
                     await self._sync_firewall()
                 except BaseException as exc:
                     await self._set(game, GameStatus.STOPPED, host_id=None, last_error=str(exc))
@@ -603,6 +631,7 @@ class Orchestrator:
             await progress("waiting for the server to answer")
             answering = await self._wait_answering(recipe, ip)
             now = self._now()
+            took = int((now - began).total_seconds())
             await self._set(
                 game,
                 GameStatus.RUNNING,
@@ -610,18 +639,47 @@ class Orchestrator:
                 last_player_seen_at=now,
                 last_player_count=0 if answering else None,
                 last_error=None if answering else "server did not answer queries before timeout",
+                start_seconds=took,
+                start_new_vm=new_vm,
             )
+            log.info("%s started in %ss (new VM: %s)", game, took, new_vm)
             if not answering:
                 await self.notifier.notify(
-                    Level.WARNING,
-                    f"{recipe.display_name} started but isn't answering queries yet.",
+                    Event(
+                        Level.WARNING,
+                        recipe.display_name,
+                        "started, but not answering yet",
+                        icon="🟡",
+                        details=(await self.endpoint(recipe),),
+                    )
                 )
             elif announce:
-                port = recipe.ports[0].port
-                await self.notifier.notify(
-                    Level.INFO, f"{recipe.display_name} is up at `{await self.address()}:{port}`."
-                )
+                await self.notifier.notify(await self.up_event(recipe, took, new_vm))
         return await self.game(game)
+
+    async def endpoint(self, recipe: Recipe) -> str:
+        return f"`{await self.address()}:{recipe.ports[0].port}`"
+
+    @staticmethod
+    def start_detail(seconds: int, new_vm: bool | None) -> str:
+        """``started in 2m 13s (new VM)``: request to ready, including provisioning."""
+        vm = {True: " (new VM)", False: " (VM reused)", None: ""}[new_vm]
+        return f"started in {duration(seconds)}{vm}"
+
+    async def up_event(
+        self, recipe: Recipe, seconds: int | None = None, new_vm: bool | None = None
+    ) -> Event:
+        details = [await self.endpoint(recipe)]
+        if seconds is not None:
+            details.append(self.start_detail(seconds, new_vm))
+        return Event(
+            Level.INFO,
+            recipe.display_name,
+            "up",
+            icon="🟢",
+            details=tuple(details),
+            tone=Tone.GOOD,
+        )
 
     async def _start_failed(self, game: str, exc: BaseException) -> None:
         log.error("starting %s failed: %s", game, exc)
@@ -630,7 +688,14 @@ class Orchestrator:
             # The container may have run and changed the world: keep the host for a stop/backup.
             await self._set(game, GameStatus.FAILED, last_error=f"start failed: {exc}")
             await self.notifier.notify(
-                Level.ERROR, f"Starting {game} failed after it ran ({exc}). Run a stop to back up."
+                Event(
+                    Level.ERROR,
+                    self.recipes.get(game).display_name,
+                    "start failed",
+                    icon="🔴",
+                    details=(str(exc),),
+                    footer="It ran first, so the VM is kept: run a stop to back it up.",
+                )
             )
             return
         await self._set(game, GameStatus.STOPPED, host_id=None, last_error=f"start failed: {exc}")
@@ -691,26 +756,34 @@ class Orchestrator:
         announcement: str | None = None,
     ) -> GameView:
         """Stop (and back up) a game. ``announce`` posts it to the notify channel;
-        ``announcement`` replaces the default text (e.g. the idle stop's reason)."""
+        ``announcement`` adds why (e.g. "empty for 10 minutes")."""
         op = op or self.begin(game, "stopping")
         try:
             recipe = self.recipes.get(game)
             async with self._lock(game):
                 await self._stop_locked(recipe, reason, progress)
-            if announce:
-                text = announcement or f"{recipe.display_name} stopped and backed up."
-                await self.notifier.notify(Level.INFO, text)
             async with self._host_lock:
                 await self._sync_firewall_quietly()
-                deleted = await self._release_if_empty()
+                async with self._sessions() as s:
+                    before = await self._active_host(s)
+                # The stop is announced first, then the VM's deletion (if it happened now).
+                deleted = await self._release_if_empty(announce=False)
                 host = None if deleted else await self.host()
-            # (A host shutdown deletes the VM right after; don't promise it stays up.)
-            if announce and reason != "shutdown" and host is not None and host.delete_at:
+            if announce:
+                # (A host shutdown deletes the VM right after; don't promise it stays up.)
+                kept = reason != "shutdown" and host is not None and host.delete_at is not None
                 await self.notifier.notify(
-                    Level.INFO,
-                    f"The VM stays up until {host.delete_at:%H:%M} UTC (already paid for); "
-                    "starting a game before then reuses it.",
+                    Event(
+                        Level.INFO,
+                        recipe.display_name,
+                        "stopped and backed up",
+                        icon="⚫",
+                        details=(announcement,) if announcement else (),
+                        footer=self.vm_kept_note(host) if kept and host else None,
+                    )
                 )
+            if deleted and before is not None:
+                await self._announce_deleted(before)
             return await self.game(game)
         finally:
             op.release()
@@ -733,7 +806,13 @@ class Orchestrator:
             )
             if state.dirty:
                 await self.notifier.notify(
-                    Level.ERROR, f"{game} had unsaved data but no host was found; it is lost."
+                    Event(
+                        Level.ERROR,
+                        recipe.display_name,
+                        "unsaved progress lost",
+                        icon="🔴",
+                        details=("its VM no longer exists",),
+                    )
                 )
             return
 
@@ -751,8 +830,14 @@ class Orchestrator:
             log.exception("stopping %s failed", game)
             await self._set(game, GameStatus.FAILED, last_error=f"stop failed: {exc}")
             await self.notifier.notify(
-                Level.ERROR,
-                f"Stopping {recipe.display_name} failed: {exc}. The VM is kept so no data is lost.",
+                Event(
+                    Level.ERROR,
+                    recipe.display_name,
+                    "stop failed",
+                    icon="🔴",
+                    details=(str(exc),),
+                    footer="The VM is kept, so no data is lost.",
+                )
             )
             raise NexusError(f"stopping {recipe.display_name} failed: {exc}") from exc
 
@@ -832,7 +917,15 @@ class Orchestrator:
                     await agent.run_container(recipe, env)
             except BaseException as exc:
                 await self._set(game, GameStatus.FAILED, last_error=f"backup failed: {exc}")
-                await self.notifier.notify(Level.ERROR, f"Backup of {game} failed: {exc}")
+                await self.notifier.notify(
+                    Event(
+                        Level.ERROR,
+                        recipe.display_name,
+                        "backup failed",
+                        icon="🔴",
+                        details=(str(exc),),
+                    )
+                )
                 raise NexusError(f"backup of {recipe.display_name} failed: {exc}") from exc
             await self._set(game, GameStatus.RUNNING, last_player_seen_at=self._now())
         return backup
@@ -1044,10 +1137,7 @@ class Orchestrator:
                 await self.stop(
                     state.game,
                     "idle",
-                    announcement=(
-                        f"{recipe.display_name} was empty for {minutes} minutes; "
-                        "stopped and backed up."
-                    ),
+                    announcement=f"empty for {minutes} minutes",
                 )
             except (NexusError, InvalidStateError) as exc:
                 log.warning("idle stop of %s failed: %s", state.game, exc)
@@ -1092,8 +1182,13 @@ class Orchestrator:
                     if state.game not in self._snapshot_failing:
                         self._snapshot_failing.add(state.game)
                         await self.notifier.notify(
-                            Level.WARNING,
-                            f"Couldn't copy {recipe.display_name}'s latest snapshot to ymir: {exc}",
+                            Event(
+                                Level.WARNING,
+                                recipe.display_name,
+                                "snapshot copy failed",
+                                icon="⚠️",
+                                details=(str(exc),),
+                            )
                         )
                 else:
                     self._snapshot_failing.discard(state.game)
@@ -1159,12 +1254,21 @@ class Orchestrator:
                 await self._backups.delete_snapshot(game, snapshot.filename)
                 snapshot.deleted_at = self._now()
 
+    def vm_kept_note(self, host: "HostView") -> str | None:
+        """Footer for a stop that leaves an empty VM up until its paid hour ends."""
+        if host.delete_at is None:
+            return None
+        return (
+            f"The VM stays up until {clock(host.delete_at, self.config.timezone)}; "
+            "starting a game before then reuses it."
+        )
+
     def _delete_at(self, host: Host, now: datetime) -> datetime:
         """When an empty host should go: just before its already-paid hour runs out."""
         margin = timedelta(seconds=self.config.host_billing_margin)
         return paid_until(host.created_at, now) - margin
 
-    async def _release_if_empty(self) -> bool:
+    async def _release_if_empty(self, *, announce: bool = True) -> bool:
         """The last game left the host: delete it if its paid hour is (almost) over, otherwise
         keep it until then so a restart reuses it for free. Caller holds the host lock.
 
@@ -1180,7 +1284,7 @@ class Orchestrator:
             delete_at = self._delete_at(host, now)
             name = host.name
         if now >= delete_at:
-            return await self._teardown_if_empty()
+            return await self._teardown_if_empty(announce=announce)
         log.info("host %s is empty; keeping it until %s (already paid for)", name, delete_at)
         return False
 
@@ -1234,13 +1338,24 @@ class Orchestrator:
                     known.add(server.id)
                     adopted = True
                     await self.notifier.notify(
-                        Level.WARNING, f"Adopted untracked nexus VM {server.name} ({server.id})."
+                        Event(
+                            Level.WARNING,
+                            "Host",
+                            "adopted an untracked VM",
+                            icon="⚠️",
+                            details=(f"{server.name} ({server.id})",),
+                        )
                     )
                 else:
                     await self.notifier.notify(
-                        Level.WARNING,
-                        f"Found an extra nexus VM {server.name} ({server.id}) that isn't the "
-                        "current host. It was left alone; delete it by hand if it holds no data.",
+                        Event(
+                            Level.WARNING,
+                            "Host",
+                            "found an extra VM",
+                            icon="⚠️",
+                            details=(f"{server.name} ({server.id})",),
+                            footer="Left alone: delete it by hand if it holds no data.",
+                        )
                     )
 
         if adopted:
@@ -1282,7 +1397,13 @@ class Orchestrator:
             adopted.append(game)
         if adopted:
             await self.notifier.notify(
-                Level.WARNING, f"Adopted untracked game containers: {', '.join(adopted)}"
+                Event(
+                    Level.WARNING,
+                    "Host",
+                    "adopted untracked game servers",
+                    icon="⚠️",
+                    details=tuple(adopted),
+                )
             )
         return adopted
 
@@ -1332,12 +1453,7 @@ class Orchestrator:
                     )
                     # Whoever started it was watching a progress message from the previous
                     # nexus process, which will never finish; announce it here instead.
-                    recipe = self.recipes.get(state.game)
-                    port = recipe.ports[0].port
-                    await self.notifier.notify(
-                        Level.INFO,
-                        f"{recipe.display_name} is up at `{await self.address()}:{port}`.",
-                    )
+                    await self.notifier.notify(await self.up_event(self.recipes.get(state.game)))
                 continue
             log.info("recovering %s from %s", state.game, state.status)
             try:

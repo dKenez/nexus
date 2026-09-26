@@ -4,6 +4,7 @@ from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -22,7 +23,9 @@ def _split_csv(value: object) -> object:
 
 class Settings(BaseSettings):
     # Blank values (e.g. `DISCORD_GUILD_ID=` in .env) mean "unset", not "invalid".
-    model_config = SettingsConfigDict(env_file=None, extra="ignore", env_ignore_empty=True)
+    model_config = SettingsConfigDict(
+        env_file=None, extra="ignore", env_ignore_empty=True, arbitrary_types_allowed=True
+    )
 
     # --- app ---
     nexus_env: Environment = Environment.DEV
@@ -57,6 +60,9 @@ class Settings(BaseSettings):
     ssh_user: str = "nexus"
     ssh_connect_timeout: int = 10
 
+    # Times shown to people (Discord, notifications), e.g. Europe/Copenhagen.
+    timezone: ZoneInfo = ZoneInfo("UTC")
+
     # --- public addressing ---
     public_hostname: str | None = None
 
@@ -82,6 +88,16 @@ class Settings(BaseSettings):
     @classmethod
     def _csv(cls, value: object) -> object:
         return _split_csv(value)
+
+    @field_validator("timezone", mode="before")
+    @classmethod
+    def _zone(cls, value: object) -> object:
+        if isinstance(value, str):
+            try:
+                return ZoneInfo(value)
+            except (ZoneInfoNotFoundError, ValueError) as exc:
+                raise ValueError(f"unknown timezone {value!r}") from exc
+        return value
 
     @field_validator("nexus_api_token")
     @classmethod

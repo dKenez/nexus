@@ -5,15 +5,14 @@ import logging
 import discord
 from discord import app_commands
 
+from nexus.bot import render
 from nexus.bot.commands import GameGroup, HostGroup, games_command
 from nexus.bot.permissions import MissingTier, RoleTiers
-from nexus.core.notify import Level
+from nexus.core.notify import Event, Level
 from nexus.core.orchestrator import NexusError, Orchestrator
 from nexus.core.recipes import MissingSecretError, RecipeNotFoundError
 
 log = logging.getLogger(__name__)
-
-LEVEL_ICON = {Level.INFO: "\N{INFORMATION SOURCE}\ufe0f", Level.WARNING: "⚠️", Level.ERROR: "🚨"}
 
 
 class NexusTree(app_commands.CommandTree["NexusBot"]):
@@ -33,7 +32,9 @@ class NexusTree(app_commands.CommandTree["NexusBot"]):
             log.exception("command failed", exc_info=original)
             message = "🔴 Something went wrong; the admins have been told."
             name = interaction.command.qualified_name if interaction.command else "?"
-            await interaction.client.notify(Level.ERROR, f"`/{name}` failed: {original!r}")
+            await interaction.client.notify(
+                Event(Level.ERROR, "nexus", f"/{name} failed", icon="🔴", details=(repr(original),))
+            )
         await respond(interaction, message)
 
 
@@ -121,13 +122,13 @@ class NexusBot(discord.Client):
             return
         log.info("notifications go to #%s", getattr(channel, "name", self._notify_channel_id))
 
-    async def notify(self, level: Level, message: str) -> None:
-        """``Notifier`` implementation: post to the notify channel."""
+    async def notify(self, event: Event) -> None:
+        """``Notifier`` implementation: post the event to the notify channel as an embed."""
         if self._notify_channel_id is None or not self.is_ready():
             return
         channel = await self._notify_channel()
         if channel is not None:
-            await channel.send(f"{LEVEL_ICON[level]} {message}"[:2000])
+            await channel.send(embed=render.event_embed(event))
 
 
 async def respond(interaction: discord.Interaction, message: str) -> None:

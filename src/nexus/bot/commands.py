@@ -8,7 +8,9 @@ from discord import app_commands
 
 from nexus.bot import render
 from nexus.bot.permissions import Tier, require
+from nexus.core.notify import Event, Level, Tone
 from nexus.core.orchestrator import Orchestrator
+from nexus.core.timefmt import date_clock
 from nexus.db.models import GameStatus, utcnow
 
 if TYPE_CHECKING:
@@ -32,44 +34,55 @@ def actor(interaction: discord.Interaction) -> str:
 
 
 class Progress:
-    """A status message edited in place as an operation advances.
+    """A status embed edited in place as an operation advances, in the /games style: the
+    current status on top, the steps so far as small text underneath.
 
-    Interaction webhooks expire after 15 minutes and a first boot can take longer, so the
-    message is a plain channel message whenever the channel allows it.
+    Interaction webhooks expire after 15 minutes and a first boot can take longer, so if an
+    edit fails the status continues in a fresh channel message.
     """
 
-    def __init__(self, interaction: discord.Interaction, title: str) -> None:
+    def __init__(self, interaction: discord.Interaction, title: str, working: str) -> None:
         self._interaction = interaction
         self._title = title
+        self._head = f"⏳ **{working}**"
         self._message: discord.Message | discord.WebhookMessage | None = None
-        self._lines: list[str] = []
+        self._steps: list[str] = []
+        self._requested = f"requested by {interaction.user.display_name}"
 
-    def _render(self, final: str | None = None) -> str:
-        body = "\n".join(f"· {line}" for line in self._lines[-8:])
-        text = f"{self._title}\n{body}" if body else self._title
-        return f"{text}\n{final}" if final else text
+    def _embed(self, head: str, colour: Tone, footer: str | None = None) -> discord.Embed:
+        steps = "\n".join(f"-# {step}" for step in self._steps[-8:])
+        embed = discord.Embed(
+            title=self._title,
+            description=f"{head}\n{steps}" if steps else head,
+            colour=render.COLOURS[colour],
+        )
+        embed.set_footer(text="\n".join(t for t in (footer, self._requested) if t))
+        return embed
 
     async def begin(self) -> None:
-        await self._interaction.response.send_message(f"⏳ {self._title}")
+        await self._interaction.response.send_message(embed=self._embed(self._head, Tone.NEUTRAL))
         self._message = await self._interaction.original_response()
 
-    async def __call__(self, line: str) -> None:
-        self._lines.append(line)
-        await self._edit(f"⏳ {self._render()}")
+    async def __call__(self, step: str) -> None:
+        self._steps.append(step)
+        await self._edit(self._embed(self._head, Tone.NEUTRAL))
 
-    async def finish(self, final: str) -> None:
-        await self._edit(self._render(final))
+    async def finish(self, event: Event) -> None:
+        await self._edit(self._embed(event.line(), event.colour, event.footer))
 
-    async def _edit(self, content: str) -> None:
+    async def _edit(self, embed: discord.Embed) -> None:
         if self._message is None:
             return
         try:
-            await self._message.edit(content=content[:2000])
+            await self._message.edit(content=None, embed=embed)
         except discord.HTTPException:
-            # Token expired: continue in a fresh channel message.
             channel = self._interaction.channel
             if isinstance(channel, discord.abc.Messageable):
-                self._message = await channel.send(content[:2000])
+                self._message = await channel.send(embed=embed)
+
+
+def failed(title: str, what: str, exc: BaseException) -> Event:
+    return Event(Level.ERROR, title, what, icon="🔴", details=(str(exc),))
 
 
 async def game_autocomplete(
@@ -90,17 +103,18 @@ async def restore_point_autocomplete(
     if not game or game not in orch(interaction).recipes:
         return []
     o = orch(interaction)
+    tz = o.config.timezone
     points = [
         (
             b.created_at,
-            f"Backup {b.created_at:%Y-%m-%d %H:%M} UTC · {b.reason} · {render.size(b.bytes)}",
+            f"Backup {date_clock(b.created_at, tz)} · {b.reason} · {render.size(b.bytes)}",
             f"backup:{b.id}",
         )
         for b in await o.backups(game)
     ] + [
         (
             sn.taken_at,
-            f"Snapshot {sn.taken_at:%Y-%m-%d %H:%M} UTC · {render.size(sn.bytes)}",
+            f"Snapshot {date_clock(sn.taken_at, tz)} · {render.size(sn.bytes)}",
             f"snapshot:{sn.id}",
         )
         for sn in await o.snapshots(game)
@@ -133,7 +147,7 @@ class GameGroup(app_commands.Group):
         o = orch(interaction)
         view = await o.game(game)
         await interaction.response.send_message(
-            f"**{view.recipe.display_name}**: {render.game_line(view, utcnow(), await o.address())}"
+            embed=render.game_embed(view, utcnow(), await o.address())
         )
 
     @app_commands.command(description="Start a game server (provisions a VM if needed)")
@@ -144,9 +158,7 @@ class GameGroup(app_commands.Group):
         o = orch(interaction)
         recipe = o.recipes.get(game)
         op = o.begin(game, "starting")  # duplicate clicks get "already starting"
-        progress = Progress(
-            interaction, f"Starting **{recipe.display_name}** for {interaction.user.mention}"
-        )
+        progress = Progress(interaction, recipe.display_name, "starting")
         try:
             await progress.begin()
         except BaseException:
@@ -156,17 +168,20 @@ class GameGroup(app_commands.Group):
             view = await o.start(game, progress, op=op, announce=announce(interaction))
         except Exception as exc:
             await o.audit(actor(interaction), "start", game, "error", str(exc))
-            await progress.finish(f"🔴 {exc}")
+            await progress.finish(failed(recipe.display_name, "start failed", exc))
             return
         await o.audit(actor(interaction), "start", game, "ok")
-        address = await o.address()
-        ports = ", ".join(str(p) for p in recipe.ports)
-        endpoint = f"{address}:{recipe.ports[0].port}"
         if view.status is GameStatus.RUNNING and view.last_error is None:
-            await progress.finish(f"🟢 **{recipe.display_name}** is up at `{endpoint}` ({ports})")
+            await progress.finish(await o.up_event(recipe, view.start_seconds, view.start_new_vm))
         else:
             await progress.finish(
-                f"🟡 **{recipe.display_name}** started but isn't answering yet: {view.last_error}"
+                Event(
+                    Level.WARNING,
+                    recipe.display_name,
+                    "started, but not answering yet",
+                    icon="🟡",
+                    details=(await o.endpoint(recipe),),
+                )
             )
 
     @app_commands.command(description="Stop a game server and back it up")
@@ -177,9 +192,7 @@ class GameGroup(app_commands.Group):
         o = orch(interaction)
         recipe = o.recipes.get(game)
         op = o.begin(game, "stopping")  # duplicate clicks get "already stopping"
-        progress = Progress(
-            interaction, f"Stopping **{recipe.display_name}** for {interaction.user.mention}"
-        )
+        progress = Progress(interaction, recipe.display_name, "stopping")
         try:
             await progress.begin()
         except BaseException:
@@ -189,20 +202,19 @@ class GameGroup(app_commands.Group):
             await o.stop(game, "manual", progress, op=op, announce=announce(interaction))
         except Exception as exc:
             await o.audit(actor(interaction), "stop", game, "error", str(exc))
-            await progress.finish(f"🔴 {exc}")
+            await progress.finish(failed(recipe.display_name, "stop failed", exc))
             return
         await o.audit(actor(interaction), "stop", game, "ok")
         host = await o.host()
-        if host is None:
-            tail = " The VM was deleted."
-        elif host.delete_at is not None:
-            tail = (
-                f" The VM stays up until {host.delete_at:%H:%M} UTC, since that hour is already"
-                " paid for: starting again before then is instant and free."
+        await progress.finish(
+            Event(
+                Level.INFO,
+                recipe.display_name,
+                "stopped and backed up",
+                icon="⚫",
+                footer=o.vm_kept_note(host) if host else None,
             )
-        else:
-            tail = ""
-        await progress.finish(f"⚫ **{recipe.display_name}** stopped and backed up.{tail}")
+        )
 
     @app_commands.command(description="Back up a running game now (restarts it briefly)")
     @app_commands.autocomplete(game=game_autocomplete)
@@ -211,7 +223,7 @@ class GameGroup(app_commands.Group):
         o = orch(interaction)
         recipe = o.recipes.get(game)
         op = o.begin(game, "being backed up")  # duplicate clicks get "already being backed up"
-        progress = Progress(interaction, f"Backing up **{recipe.display_name}**")
+        progress = Progress(interaction, recipe.display_name, "backing up")
         try:
             await progress.begin()
         except BaseException:
@@ -221,18 +233,32 @@ class GameGroup(app_commands.Group):
             backup = await o.backup(game, progress, op=op)
         except Exception as exc:
             await o.audit(actor(interaction), "backup", game, "error", str(exc))
-            await progress.finish(f"🔴 {exc}")
+            await progress.finish(failed(recipe.display_name, "backup failed", exc))
             return
         await o.audit(actor(interaction), "backup", game, "ok", backup.filename)
-        await progress.finish(f"💾 Saved backup `#{backup.id}` ({render.size(backup.bytes)}).")
+        await progress.finish(
+            Event(
+                Level.INFO,
+                recipe.display_name,
+                "backed up",
+                icon="💾",
+                details=(f"`#{backup.id}`", render.size(backup.bytes)),
+                tone=Tone.GOOD,
+            )
+        )
 
     @app_commands.command(description="List a game's backups")
     @app_commands.autocomplete(game=game_autocomplete)
     @require(Tier.ADMIN)
     async def backups(self, interaction: discord.Interaction, game: str) -> None:
         o = orch(interaction)
-        text = render.backups_text(game, await o.backups(game), await o.snapshots(game))
-        await interaction.response.send_message(text, ephemeral=True)
+        embed = render.backups_embed(
+            o.recipes.get(game).display_name,
+            await o.backups(game),
+            await o.snapshots(game),
+            o.config.timezone,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(description="Choose the backup or snapshot a game's next start uses")
     @app_commands.describe(point="A full backup or an hourly snapshot")
@@ -253,7 +279,8 @@ class GameGroup(app_commands.Group):
             what = "the chosen snapshot"
         else:
             chosen = await o.pin_backup(game, int(raw_id))
-            what = f"backup `#{chosen.id}` ({chosen.created_at:%Y-%m-%d %H:%M} UTC)"
+            when = date_clock(chosen.created_at, o.config.timezone)
+            what = f"backup `#{chosen.id}` ({when})"
         await o.audit(actor(interaction), "restore", game, "ok", chosen.filename)
         await interaction.followup.send(f"📌 {game} will start from {what}.")
 
@@ -270,7 +297,7 @@ class HostGroup(app_commands.Group):
         running = [v for v in await o.games() if v.status is not GameStatus.STOPPED]
         price = await o.hourly_price() if host else None
         await interaction.response.send_message(
-            embed=render.host_embed(host, running, price, utcnow())
+            embed=render.host_embed(host, running, price, utcnow(), o.config.timezone)
         )
 
     @app_commands.command(description="Stop and back up every game, then delete the VM")
@@ -278,7 +305,7 @@ class HostGroup(app_commands.Group):
     async def shutdown(self, interaction: discord.Interaction) -> None:
         o = orch(interaction)
         op = o.begin_host("shutting down")
-        progress = Progress(interaction, "Shutting down the host")
+        progress = Progress(interaction, "Host", "shutting down")
         try:
             await progress.begin()
         except BaseException:
@@ -288,10 +315,18 @@ class HostGroup(app_commands.Group):
             await o.shutdown_host(progress, op=op, announce=announce(interaction))
         except Exception as exc:
             await o.audit(actor(interaction), "host-shutdown", None, "error", str(exc))
-            await progress.finish(f"🔴 {exc}")
+            await progress.finish(failed("Host", "shutdown failed", exc))
             return
         await o.audit(actor(interaction), "host-shutdown", None, "ok")
-        await progress.finish("⚫ All games stopped and backed up; the VM is gone.")
+        await progress.finish(
+            Event(
+                Level.INFO,
+                "Host",
+                "shut down",
+                icon="⚫",
+                details=("all games stopped and backed up", "VM deleted"),
+            )
+        )
 
     @app_commands.command(description="Delete the VM immediately, even with unsaved data")
     @app_commands.describe(confirm="Type DESTROY to confirm")

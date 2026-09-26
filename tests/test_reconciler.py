@@ -88,7 +88,7 @@ async def test_recover_marks_running_container_running(world: World) -> None:
     await world.orch.recover()
     assert (await world.orch.game("alpha")).status is GameStatus.RUNNING
     # The start's progress message died with the old process; players are told here instead.
-    assert any("Alpha is up at" in m for _, m in world.notifier.messages)
+    assert any(m.startswith("Alpha: up · `203.0.113.10:2456`") for _, m in world.notifier.messages)
 
 
 async def test_recover_finishes_interrupted_stop(world: World) -> None:

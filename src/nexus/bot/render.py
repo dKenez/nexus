@@ -1,10 +1,18 @@
-"""Rendering orchestrator state for Discord."""
+"""Rendering orchestrator state for Discord.
+
+One visual language everywhere, the one ``/games`` uses: an embed titled with the game (or
+"Host"), a line of ``<icon> **<status>** · detail · detail``, and a small footer. Colours say
+what it means for players: green = up, teal = neutral, orange = warning, red = error.
+"""
 
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import discord
 
+from nexus.core.notify import Event, Tone
 from nexus.core.orchestrator import GameView, HostView
+from nexus.core.timefmt import clock, date_clock, duration
 from nexus.db.models import Backup, GameStatus, HostStatus, Snapshot
 
 STATUS_ICON = {
@@ -17,12 +25,12 @@ STATUS_ICON = {
     GameStatus.FAILED: "🔴",
 }
 
-
-def duration(seconds: float) -> str:
-    seconds = int(seconds)
-    hours, rem = divmod(seconds, 3600)
-    minutes = rem // 60
-    return f"{hours}h{minutes:02d}m" if hours else f"{minutes}m"
+COLOURS = {
+    Tone.GOOD: discord.Colour.green(),
+    Tone.NEUTRAL: discord.Colour.dark_teal(),
+    Tone.WARNING: discord.Colour.orange(),
+    Tone.ERROR: discord.Colour.red(),
+}
 
 
 def size(num: int) -> str:
@@ -34,13 +42,24 @@ def size(num: int) -> str:
     return f"{value:.1f} TiB"
 
 
+def event_embed(event: Event, footer: str | None = None) -> discord.Embed:
+    """A notification, in the same shape as a line of /games."""
+    embed = discord.Embed(
+        title=event.title, description=event.line()[:4000], colour=COLOURS[event.colour]
+    )
+    text = "\n".join(t for t in (event.footer, footer) if t)
+    if text:
+        embed.set_footer(text=text[:2000])
+    return embed
+
+
 def game_line(view: GameView, now: datetime, address: str) -> str:
     parts = [f"{STATUS_ICON[view.status]} **{view.status.replace('_', ' ')}**"]
     if view.status is GameStatus.RUNNING:
         if view.players is not None:
             parts.append(f"{view.players} player{'s' if view.players != 1 else ''}")
         if view.started_at:
-            parts.append(f"up {duration((now - view.started_at).total_seconds())}")
+            parts.append(f"up {duration(now - view.started_at)}")
         port = view.recipe.ports[0].port
         parts.append(f"`{address}:{port}`")
     line = " · ".join(parts)
@@ -49,10 +68,21 @@ def game_line(view: GameView, now: datetime, address: str) -> str:
     return line
 
 
+def game_embed(view: GameView, now: datetime, address: str) -> discord.Embed:
+    tone = Tone.GOOD if view.status is GameStatus.RUNNING else Tone.NEUTRAL
+    if view.status is GameStatus.FAILED:
+        tone = Tone.ERROR
+    return discord.Embed(
+        title=view.recipe.display_name,
+        description=game_line(view, now, address),
+        colour=COLOURS[tone],
+    )
+
+
 def games_embed(
     views: list[GameView], host: HostView | None, now: datetime, address: str
 ) -> discord.Embed:
-    embed = discord.Embed(title="Game servers", colour=discord.Colour.dark_teal())
+    embed = discord.Embed(title="Game servers", colour=COLOURS[Tone.NEUTRAL])
     for view in views:
         if not view.recipe.enabled:
             continue
@@ -67,25 +97,32 @@ def games_embed(
 
 
 def host_embed(
-    host: HostView | None, running: list[GameView], price: str | None, now: datetime
+    host: HostView | None,
+    running: list[GameView],
+    price: str | None,
+    now: datetime,
+    tz: ZoneInfo,
 ) -> discord.Embed:
     if host is None:
         return discord.Embed(
-            title="Host", description="No VM exists right now.", colour=discord.Colour.greyple()
+            title="Host",
+            description="⚫ **no VM** · nothing is being billed",
+            colour=COLOURS[Tone.NEUTRAL],
         )
-    colour = discord.Colour.green() if host.status is HostStatus.READY else discord.Colour.orange()
-    embed = discord.Embed(title=f"Host {host.name}", colour=colour)
-    embed.add_field(name="Status", value=str(host.status))
-    embed.add_field(name="Type", value=f"{host.server_type} ({host.memory_mb // 1024} GB)")
-    embed.add_field(name="IP", value=host.ip)
-    embed.add_field(name="Up", value=duration((now - host.created_at).total_seconds()))
+    ready = host.status is HostStatus.READY
+    icon = "🟢" if ready and running else ("⚫" if ready else "🟠")
+    parts = [
+        f"{icon} **{'empty' if ready and not running else host.status}**",
+        f"{host.server_type} ({host.memory_mb // 1024} GB)",
+        f"up {duration(now - host.created_at)}",
+    ]
     if price:
-        embed.add_field(name="Price", value=f"€{float(price):.4f}/h")
-    embed.add_field(name="Paid until", value=f"{host.paid_until:%H:%M} UTC")
-    if host.delete_at is not None:
-        embed.add_field(
-            name="Empty", value=f"deleted at {host.delete_at:%H:%M} UTC unless a game starts"
-        )
+        parts.append(f"€{float(price):.4f}/h")
+    embed = discord.Embed(
+        title="Host",
+        description=" · ".join(parts),
+        colour=COLOURS[Tone.GOOD if ready and running else Tone.NEUTRAL],
+    )
     embed.add_field(
         name="Games",
         value=", ".join(v.recipe.display_name for v in running) or "none",
@@ -93,18 +130,31 @@ def host_embed(
     )
     if host.last_error:
         embed.add_field(name="Last error", value=host.last_error[:500], inline=False)
+    footer = [host.name, f"paid until {clock(host.paid_until, tz)}"]
+    if host.delete_at is not None:
+        footer.append(f"deleted at {clock(host.delete_at, tz)} unless a game starts")
+    embed.set_footer(text=" · ".join(footer))
     return embed
 
 
-def backups_text(game: str, backups: list[Backup], snapshots: list[Snapshot]) -> str:
-    lines = [f"**Backups for {game}** (full, taken on stop; newest first)"]
-    if not backups:
-        lines.append("none yet")
-    for b in backups[:12]:
-        lines.append(f"`#{b.id}` {b.created_at:%Y-%m-%d %H:%M} UTC · {size(b.bytes)} · {b.reason}")
+def backups_embed(
+    title: str, backups: list[Backup], snapshots: list[Snapshot], tz: ZoneInfo
+) -> discord.Embed:
+    embed = discord.Embed(title=f"{title} backups", colour=COLOURS[Tone.NEUTRAL])
+    full = [
+        f"`#{b.id}` {date_clock(b.created_at, tz)} · {size(b.bytes)} · {b.reason}"
+        for b in backups[:12]
+    ]
+    embed.add_field(
+        name="Full backups (taken on stop)", value="\n".join(full) or "none yet", inline=False
+    )
     if snapshots:
-        lines.append("")
-        lines.append("**In-game snapshots** copied to ymir while running (newest first)")
-        for sn in snapshots[:8]:
-            lines.append(f"{sn.taken_at:%Y-%m-%d %H:%M} UTC · {size(sn.bytes)} · `{sn.filename}`")
-    return "\n".join(lines)[:2000]
+        lines = [
+            f"{date_clock(sn.taken_at, tz)} · {size(sn.bytes)} · `{sn.filename}`"
+            for sn in snapshots[:8]
+        ]
+        embed.add_field(
+            name="Snapshots (copied while running)", value="\n".join(lines), inline=False
+        )
+    embed.set_footer(text="Newest first · /game restore to start from one")
+    return embed
