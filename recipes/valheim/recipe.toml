@@ -18,7 +18,7 @@ ports = [
 # Valheim answers Steam A2S queries on game port + 1.
 query = { type = "a2s", port = 2457 }
 
-idle_minutes = 20
+idle_minutes = 10
 # First boot downloads the server (~1 GB) before it answers queries.
 startup_grace_minutes = 15
 startup_timeout = 900
