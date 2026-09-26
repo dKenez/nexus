@@ -146,5 +146,5 @@ Commits follow [Conventional Commits](https://www.conventionalcommits.org) (`fea
 
 ## Deployment
 
-- `deploy/k8s/` holds reference manifests in edda's conventions. The image comes from Forgejo's registry; the k3s nodes pull it through their `registries.yaml`.
+- `deploy/k8s/` holds reference manifests in edda's conventions. The image comes from Forgejo's registry and pulls anonymously; Forgejo is only reachable on the tailnet.
 - The edda side (Argo app, SOPS secret, PV, apps-pg role) lives in the edda repo, not here.
