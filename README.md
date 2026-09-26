@@ -3,8 +3,8 @@
 nexus runs game servers on Hetzner Cloud on demand, controlled from Discord.
 
 - **`/game start valheim`** creates a Hetzner VM (if none is running), attaches the static Primary IP, restores the latest world backup and starts the server.
-- It watches the player count (Steam A2S). When a game has been **empty for `idle_minutes`**, nexus stops it and **pulls the world back to ymir**.
-- When the last game stops, it **deletes the VM**, so nothing is billed while nobody plays.
+- It watches the player count, from the recipe's query: the server log for Valheim, or Steam A2S. When a game has been **empty for `idle_minutes`**, nexus stops it and **pulls the world back to ymir**.
+- When the last game stops, the VM **is deleted just before its current paid hour runs out**. Hetzner bills per started hour of a server's life, so keeping the already-paid VM costs nothing, and a restart meanwhile reuses it instantly. After that, nothing is billed while nobody plays.
 - Several games can share the one VM, each as its own container on its own ports.
 
 nexus itself runs in edda's k3s cluster. The game servers never do.
@@ -26,7 +26,7 @@ Discord ──▶ nexus (k3s pod) ──hcloud API──▶ Hetzner: VM + Primar
 |---|---|
 | start | Capacity is checked (the sum of each game's `memory_mb` against the VM's memory). A VM is provisioned if none exists and the firewall is opened. The world is restored and the container is run. |
 | running | Players are polled every `RECONCILE_INTERVAL` seconds. An empty game past its startup grace and `idle_minutes` is stopped. If the recipe has `[snapshots]`, each new in-game snapshot is copied to `/backups/<game>/snapshots/`. |
-| stop | `docker stop` lets the server save. The data directory is streamed to `/backups` (written atomically). Old backups are pruned, and the VM is deleted if nothing else runs on it. |
+| stop | `docker stop` lets the server save. The data directory is streamed to `/backups` (written atomically). Old backups are pruned. If nothing else runs on the VM, it's kept until `HOST_BILLING_MARGIN` seconds (default 300) before its paid hour ends, then deleted. A start before then reuses it. `/host shutdown` deletes it immediately. |
 
 **Safety rules:**
 - **A VM is never deleted while any game on it has unsaved data.** If a backup fails, the game is marked `failed` and the VM is kept. Admins are alerted, and a later `/game stop` retries the backup.
@@ -118,7 +118,7 @@ Commits follow [Conventional Commits](https://www.conventionalcommits.org) (`fea
 1. Run `mise run hcloud:ls` and confirm the dev project is active.
 2. Start nexus: `mise run dev`, with `idle_minutes = 2` in a local recipe copy if you want a quick idle test.
 3. Run `/game start valheim`. Expect a VM holding the dev Primary IP and a "ready" message.
-4. Join the server, change something in the world, then leave. After the idle period nexus should stop the game, write `.backups/valheim/*.tar.zst` and delete the VM. The Primary IP should stay and be unassigned.
+4. Join the server, change something in the world, then leave. After the idle period nexus should stop the game, write `.backups/valheim/*.tar.zst`, and delete the VM near the end of its paid hour. The Primary IP should stay and be unassigned.
 5. Run `/game start valheim` again. The change should still be there.
 
 ## Deployment

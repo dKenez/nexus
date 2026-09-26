@@ -69,7 +69,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             server_type=settings.hcloud_server_type,
             host_memory_reserve_mb=settings.host_memory_reserve_mb,
             backup_retention=settings.backup_retention,
-            host_idle_grace=settings.host_idle_grace,
+            host_billing_margin=settings.host_billing_margin,
             public_hostname=settings.public_hostname,
         ),
         recipes=recipes,

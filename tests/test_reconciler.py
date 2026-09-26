@@ -52,22 +52,6 @@ async def test_unreachable_server_counts_as_empty(world: World) -> None:
     assert await world.orch.poll_players() == ["alpha"]
 
 
-async def test_empty_host_is_garbage_collected_after_grace(world: World) -> None:
-    await world.orch.start("alpha")
-    # Simulate drift: the game ended up stopped without tearing down the host.
-    async with world.sessions() as s, s.begin():
-        state = await s.get_one(GameState, "alpha")
-        state.status = GameStatus.STOPPED
-        state.dirty = False
-
-    assert not await world.orch.gc_host()  # starts the empty timer
-    world.clock.advance(minutes=5)
-    assert not await world.orch.gc_host()
-    world.clock.advance(minutes=6)
-    assert await world.orch.gc_host()
-    assert world.hetzner.servers == {}
-
-
 async def test_vanished_host_is_detected(world: World) -> None:
     await world.orch.start("alpha")
     world.hetzner.servers.clear()

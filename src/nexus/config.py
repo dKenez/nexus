@@ -34,7 +34,9 @@ class Settings(BaseSettings):
     backup_dir: Path = Path("/backups")
     backup_retention: int = Field(default=10, ge=1)
     reconcile_interval: int = Field(default=60, ge=5, description="seconds")
-    host_idle_grace: int = Field(default=600, description="seconds a ready host may sit empty")
+    # Hetzner bills each server per started hour of its life, so an empty host is kept until
+    # this many seconds before its paid hour runs out (a restart meanwhile reuses it for free).
+    host_billing_margin: int = Field(default=300, ge=60, le=1800)
 
     # --- hetzner ---
     hcloud_token: SecretStr

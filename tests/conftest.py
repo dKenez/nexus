@@ -93,7 +93,9 @@ def world(tmp_path: Path, sessions: async_sessionmaker[AsyncSession]) -> World:
             server_type="cx32",
             host_memory_reserve_mb=1024,
             backup_retention=3,
-            host_idle_grace=600,
+            # A margin of a whole hour deletes an empty host right away, which most tests
+            # assume; test_billing.py covers keeping it for the paid hour.
+            host_billing_margin=3600,
         ),
         recipes=RecipeBook(dict(RECIPES)),
         sessions=sessions,

@@ -14,6 +14,7 @@ anything that creates/deletes the host, changes the firewall or claims host capa
 import asyncio
 import fnmatch
 import logging
+import math
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -99,7 +100,8 @@ class OrchestratorConfig:
     server_type: str
     host_memory_reserve_mb: int
     backup_retention: int
-    host_idle_grace: int
+    # An empty host is deleted this many seconds before its current paid hour ends.
+    host_billing_margin: int
     provision_timeout: int = 600
     public_hostname: str | None = None
 
@@ -129,6 +131,19 @@ class HostView:
     ready_at: datetime | None
     ip: str
     last_error: str | None
+    # The end of the hour Hetzner has already billed.
+    paid_until: datetime
+    # When nothing runs on the host: when it will be deleted.
+    delete_at: datetime | None
+
+
+BILLING_HOUR = timedelta(hours=1)
+
+
+def paid_until(created_at: datetime, now: datetime) -> datetime:
+    """End of the current billed hour: Hetzner bills a server per started hour of its life."""
+    hours = max(1, math.ceil((now - created_at) / BILLING_HOUR))
+    return created_at + hours * BILLING_HOUR
 
 
 class Orchestrator:
@@ -260,7 +275,10 @@ class Orchestrator:
             host = await self._active_host(s)
         if host is None:
             return None
+        now = self._now()
         return HostView(
+            paid_until=paid_until(host.created_at, now),
+            delete_at=self._delete_at(host, now) if host.empty_since is not None else None,
             id=host.id,
             name=host.name,
             status=host.status,
@@ -342,6 +360,11 @@ class Orchestrator:
 
         if host is not None and host.status is HostStatus.READY:
             if host.hcloud_id is not None and await self._hetzner.get_server(host.hcloud_id):
+                if host.empty_since is not None:
+                    # Reused within its paid hour: no longer waiting to be deleted.
+                    async with self._sessions() as s, s.begin():
+                        (await s.get_one(Host, host.id)).empty_since = None
+                    log.info("reusing host %s (already paid for)", host.name)
                 return host
             await self._mark_host_gone(host.id, "server disappeared from Hetzner")
             host = None
@@ -577,7 +600,10 @@ class Orchestrator:
         await self._set(game, GameStatus.STOPPED, host_id=None, last_error=f"start failed: {exc}")
         async with self._host_lock:
             await self._sync_firewall_quietly()
-            await self._teardown_quietly()
+            try:
+                await self._release_if_empty()
+            except Exception:
+                log.exception("releasing the empty host failed")
 
     async def _restore_source(self, game: str) -> Backup | None:
         async with self._sessions() as s:
@@ -633,7 +659,7 @@ class Orchestrator:
                 await self._stop_locked(recipe, reason, progress)
             async with self._host_lock:
                 await self._sync_firewall_quietly()
-                await self._teardown_if_empty()
+                await self._release_if_empty()
             return await self.game(game)
         finally:
             op.release()
@@ -1075,8 +1101,33 @@ class Orchestrator:
                 await self._backups.delete_snapshot(game, snapshot.filename)
                 snapshot.deleted_at = self._now()
 
+    def _delete_at(self, host: Host, now: datetime) -> datetime:
+        """When an empty host should go: just before its already-paid hour runs out."""
+        margin = timedelta(seconds=self.config.host_billing_margin)
+        return paid_until(host.created_at, now) - margin
+
+    async def _release_if_empty(self) -> bool:
+        """The last game left the host: delete it if its paid hour is (almost) over, otherwise
+        keep it until then so a restart reuses it for free. Caller holds the host lock.
+
+        Returns whether the host was deleted.
+        """
+        now = self._now()
+        async with self._sessions() as s, s.begin():
+            host = await self._active_host(s)
+            if host is None or host.status is not HostStatus.READY or await self._occupying(s):
+                return False
+            if host.empty_since is None:
+                host.empty_since = now
+            delete_at = self._delete_at(host, now)
+            name = host.name
+        if now >= delete_at:
+            return await self._teardown_if_empty()
+        log.info("host %s is empty; keeping it until %s (already paid for)", name, delete_at)
+        return False
+
     async def gc_host(self) -> bool:
-        """Delete a READY host that has been empty for longer than the grace period."""
+        """Delete an empty READY host once its paid hour is about to run out."""
         async with self._host_lock:
             async with self._sessions() as s, s.begin():
                 host = await self._active_host(s)
@@ -1085,14 +1136,7 @@ class Orchestrator:
                 if await self._occupying(s):
                     host.empty_since = None
                     return False
-                if host.empty_since is None:
-                    host.empty_since = self._now()
-                    return False
-                empty_for = self._now() - host.empty_since
-            if empty_for < timedelta(seconds=self.config.host_idle_grace):
-                return False
-            log.info("host empty for %s; deleting", empty_for)
-            return await self._teardown_if_empty()
+            return await self._release_if_empty()
 
     async def reconcile_hosts(self) -> None:
         """Bring the DB's idea of the host in line with what exists at Hetzner."""
@@ -1248,9 +1292,3 @@ class Orchestrator:
             await self._sync_firewall()
         except Exception:
             log.exception("updating the firewall failed")
-
-    async def _teardown_quietly(self) -> None:
-        try:
-            await self._teardown_if_empty()
-        except Exception:
-            log.exception("deleting the empty host failed")

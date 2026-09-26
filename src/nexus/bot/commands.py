@@ -188,7 +188,15 @@ class GameGroup(app_commands.Group):
             return
         await o.audit(actor(interaction), "stop", game, "ok")
         host = await o.host()
-        tail = "" if host else " The VM was deleted."
+        if host is None:
+            tail = " The VM was deleted."
+        elif host.delete_at is not None:
+            tail = (
+                f" The VM stays up until {host.delete_at:%H:%M} UTC, since that hour is already"
+                " paid for: starting again before then is instant and free."
+            )
+        else:
+            tail = ""
         await progress.finish(f"⚫ **{recipe.display_name}** stopped and backed up.{tail}")
 
     @app_commands.command(description="Back up a running game now (restarts it briefly)")

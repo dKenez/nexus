@@ -81,6 +81,11 @@ def host_embed(
     embed.add_field(name="Up", value=duration((now - host.created_at).total_seconds()))
     if price:
         embed.add_field(name="Price", value=f"€{float(price):.4f}/h")
+    embed.add_field(name="Paid until", value=f"{host.paid_until:%H:%M} UTC")
+    if host.delete_at is not None:
+        embed.add_field(
+            name="Empty", value=f"deleted at {host.delete_at:%H:%M} UTC unless a game starts"
+        )
     embed.add_field(
         name="Games",
         value=", ".join(v.recipe.display_name for v in running) or "none",

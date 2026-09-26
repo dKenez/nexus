@@ -48,6 +48,8 @@ class HostOut(BaseModel):
     ready_at: datetime | None
     ip: str
     last_error: str | None
+    paid_until: datetime
+    delete_at: datetime | None
     hourly_price: str | None = None
 
     @classmethod
@@ -62,6 +64,8 @@ class HostOut(BaseModel):
             ready_at=view.ready_at,
             ip=view.ip,
             last_error=view.last_error,
+            paid_until=view.paid_until,
+            delete_at=view.delete_at,
             hourly_price=price,
         )
 
