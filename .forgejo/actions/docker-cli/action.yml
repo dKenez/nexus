@@ -1,0 +1,21 @@
+name: docker-cli
+description: >-
+  Install the docker CLI and buildx plugin. The daemon is the runner's
+  docker-in-docker sidecar, reached through DOCKER_HOST.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        DOCKER_VERSION: 29.8.1
+        BUILDX_VERSION: v0.37.1
+      run: |
+        set -euo pipefail
+        curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" \
+          | tar -xz -C /usr/local/bin --strip-components=1 docker/docker
+        mkdir -p /usr/local/lib/docker/cli-plugins
+        curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-buildx \
+          "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-amd64"
+        chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+        docker version
+        docker buildx version

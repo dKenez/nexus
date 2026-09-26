@@ -66,7 +66,7 @@ run = "uv run python -m nexus"
 
 [tasks.build]
 description = "Build the nexus image"
-run = "docker build -t ghcr.io/dkenez/nexus:dev ."
+run = "docker build -t forgejo.kristof.world/dkenez/nexus:dev ."
 
 [tasks."hcloud:ls"]
 description = "Show the active hcloud context and nexus-managed resources (dev project sanity check)"

@@ -122,6 +122,12 @@ Other tasks: `mise tasks`. The CLI talks to a running nexus: `NEXUS_API_TOKEN=..
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org) (`feat(bot): …`, `fix(orchestrator): …`). The commit-msg hook enforces this.
 
+### Repository, CI and releases
+
+- The repo lives on Forgejo at `forgejo.kristof.world/dkenez/nexus` (push over SSH: `git@git-ssh.kristof.world:dkenez/nexus.git`). GitHub is a push-mirror.
+- CI runs on Forgejo Actions, on the in-cluster docker-in-docker runner (`runs-on: docker`). [ci.yml](.forgejo/workflows/ci.yml) runs prek and `mise run check` against a Postgres service, and builds the image.
+- A `v*` tag runs [release.yml](.forgejo/workflows/release.yml), which pushes `forgejo.kristof.world/dkenez/nexus:<tag>` to Forgejo's registry. If the job's own token can't push packages, add a repo secret `REGISTRY_TOKEN` holding a token with `write:package`.
+
 ### Hetzner dev safety
 
 - **Never use the production Hetzner token locally.** Development and smoke tests run in a separate **dev project** with its own Primary IP.
@@ -140,5 +146,5 @@ Commits follow [Conventional Commits](https://www.conventionalcommits.org) (`fea
 
 ## Deployment
 
-- `deploy/k8s/` holds reference manifests in edda's conventions.
+- `deploy/k8s/` holds reference manifests in edda's conventions. The image comes from Forgejo's registry; the k3s nodes pull it through their `registries.yaml`.
 - [docs/edda-handoff.md](docs/edda-handoff.md) lists everything edda needs.

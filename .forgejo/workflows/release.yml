@@ -1,0 +1,31 @@
+name: release
+
+# A `v*` tag publishes forgejo.kristof.world/dkenez/nexus:<tag>. edda pins that tag.
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  IMAGE: forgejo.kristof.world/dkenez/nexus
+
+jobs:
+  nexus:
+    runs-on: docker
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.forgejo/actions/docker-cli
+      # REGISTRY_TOKEN (a write:package token) is only needed if the job's
+      # automatic token turns out not to be allowed to push packages.
+      - name: Log in to the Forgejo registry
+        env:
+          TOKEN: ${{ secrets.REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
+        run: echo "$TOKEN" | docker login forgejo.kristof.world -u "${{ github.actor }}" --password-stdin
+      - name: Build and push
+        run: |
+          docker buildx build \
+            --tag "$IMAGE:${{ github.ref_name }}" \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            --label "org.opencontainers.image.version=${{ github.ref_name }}" \
+            --push .
